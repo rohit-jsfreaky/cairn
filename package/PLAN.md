@@ -137,7 +137,7 @@ Two decisions were locked by Rohit on 2026-09-01 and are not open again:
 - Rewrite descriptions so the action list is discoverable from one tool.
 - OK when: three vague prompts route to the right action.
 
-### 2.5h. The hard page, kept forever (Sep 3)
+### 2.5h. The hard page, kept forever (Sep 3) - DONE 2026-09-01
 - A permanent test page containing every hard thing: div dropdown, shadow DOM, iframe, late
   content, cookie banner, confirm dialog, popup, file input, infinite scroll.
 - OK when: the Phase 2.5 finish line in MASTER-PLAN.md passes.

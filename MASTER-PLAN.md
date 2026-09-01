@@ -73,6 +73,9 @@ in `package/BROWSING.md`. Read it before starting.
 the deletion gate are untouched. Only "what is on this page" and "what can I do to it"
 change.
 
+**STATUS: COMPLETE 2026-09-01.** All eight steps done, 385 tests. Two items below
+carry a caveat — see the honest read-out in `package/PROGRESS.md`.
+
 **FINISH LINE (all five):**
 1. On the hard page (dropdown built from divs, shadow DOM, iframe, late content, cookie
    banner) every control is found and can be acted on.

@@ -438,6 +438,8 @@ EXERCISED = {
     "switch_tab",
     # Covered in tests/test_context.py, with the rest of the browser-context work.
     "new_tab",
+    # Covered in tests/test_hard_page.py, against a real cookie banner.
+    "dismiss_when_seen",
 }
 
 

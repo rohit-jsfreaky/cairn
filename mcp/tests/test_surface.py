@@ -3,7 +3,7 @@
 Exploring used to be four tools — open, look, act, save. It is now two verbs, `cairn_act`
 and `cairn_read`, plus `cairn_save` at the end. Tool choice is the most fragile part of
 this whole system: on the first live test a host AI ignored Cairn completely and reached
-for `curl`. Twenty-nine separate action tools would have made that worse, not better.
+for `curl`. Thirty-one separate action tools would have made that worse, not better.
 
 So the descriptions are generated from the registries rather than written beside them. A
 hand-kept list drifts the first time an action is added, and an action a host AI cannot see

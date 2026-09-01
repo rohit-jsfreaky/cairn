@@ -23,7 +23,7 @@ from playwright.sync_api import Error as PlaywrightError
 from . import actions, reads
 from .browser import LATEST_TAB, Browser, Element, Snapshot, domain_of
 from .events import Emitter, MemoryWrite
-from .models import Playbook, Postcondition, utc_now
+from .models import Playbook, Postcondition, SiteKnowledge, utc_now
 from .store import CairnStore
 
 # Anything in the registry. Kept as a plain str so adding an action never means editing
@@ -141,7 +141,10 @@ class Session:
             download=self.browser.last_download,
             dialog=self.browser.last_dialog,
         )
-        self.trace.append(entry)
+        # An action that changes nothing is not a step. Replaying `highlight` would draw a
+        # box for nobody and then have its postcondition checked anyway.
+        if actions.spec_for(action).recordable:
+            self.trace.append(entry)
         self._snapshot = None
 
         return {
@@ -212,7 +215,31 @@ class Session:
             self.browser.new_tab(value or None)
             self._snapshot = None
             return
+        if action == "dismiss_when_seen":
+            if not value:
+                raise ActionFailed("dismiss_when_seen needs a CSS selector")
+            self.remember_overlay(value)
+            return
         raise ActionFailed(f"{action} is marked session-handled but nothing handles it")
+
+    def remember_overlay(self, selector: str) -> None:
+        """Clear an overlay from now on, and write it down so later runs do the same.
+
+        Site knowledge rather than a step, because an overlay appears whenever the site
+        decides to — not at a fixed point in a flow. Pinning it to a step would be
+        recording an accident.
+        """
+        self.browser.dismiss_when_seen(selector)
+        domain = domain_of(self.browser.page.url)
+        knowledge = self.store.load_site_knowledge(domain) or SiteKnowledge(domain=domain)
+        self.store.save_site_knowledge(knowledge.merge(overlay=selector))
+        self.events.emit(
+            MemoryWrite(
+                category="site_knowledge",
+                name=domain,
+                detail=f"dismiss {selector} whenever it appears",
+            )
+        )
 
     def _element_for(self, ref: str | None) -> Element:
         if ref is None:

@@ -147,6 +147,7 @@ class Executor:
         if playbook.is_stale:
             return self._retire(playbook, started)
 
+        self._arm_overlays(domain)
         self.events.emit(RunStarted(domain=domain, task=playbook.task, mode="warm"))
 
         metrics = RunMetrics(
@@ -315,6 +316,26 @@ class Executor:
             f"this step answered {step.dialog_message.strip()!r} before, but the site now "
             f"asks {seen['message'].strip()!r} — stopping rather than answering it"
         )
+
+    def _arm_overlays(self, domain: str) -> None:
+        """Re-arm the overlays this site is known for, before the trail starts.
+
+        This is what makes "learned once" mean anything. Without it the banner is cleared
+        on the run that met it and covers the page again on every run after.
+        """
+        knowledge = self.store.load_site_knowledge(domain)
+        if knowledge is None:
+            return
+        for selector in knowledge.overlays:
+            self.browser.dismiss_when_seen(selector)
+        if knowledge.overlays:
+            self.events.emit(
+                MemoryRead(
+                    category="site_knowledge",
+                    name=domain,
+                    found=True,
+                )
+            )
 
     def _do(self, step: Step, target, *, domain: str) -> None:
         """Replay one recorded action.

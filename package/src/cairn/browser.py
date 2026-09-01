@@ -230,6 +230,7 @@ class Browser:
         self.tabs: list[Page] = []
         self._watched: list[Page] = []
         self._overlays: list[str] = []
+        self._armed: dict[Page, set[str]] = {}
 
     # ------------------------------------------------------------- lifecycle
 
@@ -334,6 +335,10 @@ class Browser:
         page.on("download", self._remember_download)
         page.on("dialog", self._answer_dialog)
 
+        # Whatever this site is known to cover itself with, this tab gets it too.
+        for selector in self._overlays:
+            self._arm_overlay(page, selector)
+
     def _remember_tab(self, page: Page) -> None:
         if page not in self.tabs:
             self.tabs.append(page)
@@ -391,11 +396,22 @@ class Browser:
 
         Registered against the site, not the step, and remembered in site knowledge.
         """
-        if selector in self._overlays:
+        if selector not in self._overlays:
+            self._overlays.append(selector)
+        for page in self.tabs:
+            self._arm_overlay(page, selector)
+
+    def _arm_overlay(self, page: Page, selector: str) -> None:
+        """Register one overlay handler on one page.
+
+        Playwright registers these per page, not per browser. A flow that continues in a
+        new tab would otherwise meet the banner all over again, having "learned" it.
+        """
+        armed = self._armed.setdefault(page, set())
+        if selector in armed:
             return
-        self._overlays.append(selector)
-        target = self.page.locator(selector)
-        self.page.add_locator_handler(target, lambda overlay: overlay.click(), times=None)
+        armed.add(selector)
+        page.add_locator_handler(page.locator(selector), lambda o: o.click(), times=None)
 
     @property
     def overlays(self) -> list[str]:
@@ -412,6 +428,7 @@ class Browser:
         self.tabs = []
         self._watched = []
         self._overlays = []
+        self._armed = {}
 
     def __enter__(self) -> Browser:
         return self.start()

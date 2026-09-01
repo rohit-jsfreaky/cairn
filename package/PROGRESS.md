@@ -334,7 +334,7 @@ underneath it — the best argument yet for testing behaviour rather than implem
 
 `cairn_open` and `cairn_look` are gone. Exploring is now two verbs:
 
-- **`cairn_act(intent, action, ref?, value?, to?)`** — all 29 actions, chosen by argument
+- **`cairn_act(intent, action, ref?, value?, to?)`** — all 31 actions, chosen by argument
 - **`cairn_read(kind, ref?, attribute?)`** — `kind="page"` lists the controls (the default,
   because "what is on this page" is the first thing anyone wants), and the 12 read kinds
   answer questions about one element
@@ -358,9 +358,63 @@ wording is now pinned by two assertions.
 
 56 MCP tests, up from 36.
 
+### 2.5h is DONE (2026-09-01) — the hard page
+
+`tests/demo_site/hard.py`, served at **`/hard`** on the demo site, so it is a real URL and
+can be shown on camera. Nine things, each one chosen because it has broken a recorded flow
+on a real site:
+
+1. a dropdown built from `div`s, with no `<select>` anywhere
+2. a button inside a shadow DOM
+3. a button inside an iframe
+4. content that only appears once the data arrives
+5. a cookie banner covering the page at a moment nobody chose
+6. a `confirm()` that stops the browser dead until answered
+7. a link that opens a new tab
+8. a file input hidden behind a styled button
+9. a list that only grows as you scroll
+
+19 tests, including one that walks all nine in a single journey with no fixed sleeps and no
+model, and one that checks every step of that journey recorded a durable way to find its
+element again — a journey that cannot be replayed is a demo, not a memory.
+
+### Two bugs found by checking the finish line rather than assuming it
+
+Both were features that looked finished and were not:
+
+1. **`recordable=False` was declared and honoured nowhere.** `highlight` was being written
+   into the trail. On replay it would draw a box for nobody, and then have its postcondition
+   checked anyway — a step that can only fail.
+2. **A learned overlay was never written to memory and never read back.** "Learned once,
+   dismissed on every later run" was half built: the banner was cleared on the run that met
+   it and covered the page again on every run after. Now `dismiss_when_seen` saves to
+   `SiteKnowledge`, and the executor re-arms them before the trail starts.
+
+Checking bug 2 turned up a third: **Playwright registers overlay handlers per page, not per
+browser**, so a flow that continued in a new tab met the banner all over again having
+already "learned" it. Every tab now inherits what the site is known for.
+
+## PHASE 2.5 IS COMPLETE
+
+All eight steps. **385 tests** (329 engine + 56 MCP), ruff clean.
+
+The finish line in MASTER-PLAN.md, checked honestly — two of the five need a caveat:
+
+- Item 2 says every action "records, replays and verifies". Recording and verifying are
+  proven for all 31 actions and 12 reads. Warm replay goes through the same registry and is
+  proven end to end on the demo site, but not every individual action has been replayed
+  warm. Nothing suggests a gap; it is simply not claimed.
+- Item 3 says "three vague prompts route to the right action". That needs a model, and this
+  project has no API key by design. What is tested instead: every action name appears in the
+  one tool description, generated from the registry so it cannot drift.
+
+The other three pass outright.
+
 ## Next action
 
-**2.5h — the hard page, kept forever.** Then the Phase 2.5 finish line., then 2.5b (waiting), 2.5d (reading), 2.5e (locators), 2.5f (events),
+**Phase 1g — one or two real websites.** Everything is still proven against our own pages.
+The hard page is deliberately nastier than the demo site, but it is still a page we wrote,
+and that is the last remaining gap between "demo" and "product"., then 2.5b (waiting), 2.5d (reading), 2.5e (locators), 2.5f (events),
 2.5g (the MCP surface), 2.5h (the hard page).
 
 Note the order: the action layer landed first because it is the part that does not depend on
@@ -380,6 +434,10 @@ is the biggest remaining gap between "demo" and "product".
 ## Session log
 
 - **2026-08-31** — folder created, plan written. No code.
+- **2026-09-01 (later)** — Phase 2.5h + close-out: the hard page at /hard, nine
+  obstacles, 19 tests. Checking finish-line item 5 found three bugs: `recordable`
+  was never honoured, overlays were never saved or re-armed, and overlay handlers
+  are per-page so new tabs missed them. Phase 2.5 complete, 385 tests.
 - **2026-09-01 (later)** — Phase 2.5g: exploring collapsed to cairn_act + cairn_read,
   descriptions generated from the registries. 20 new MCP tests (56 total). The tests
   caught that the collapse had dropped the "call cairn_run first" warning.

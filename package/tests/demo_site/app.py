@@ -37,6 +37,8 @@ from pathlib import Path
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from .hard import hard_page
+
 app = FastAPI(title="Acme Billing (Cairn demo site)", docs_url=None, redoc_url=None)
 
 INVOICES = [
@@ -111,6 +113,12 @@ def page(title: str, body: str, *, variant: str, nav: bool = True) -> HTMLRespon
 <title>{title} · Acme Billing</title><style>{STYLE}</style></head>
 <body><main>{nav_html}{body}</main></body></html>"""
     )
+
+
+@app.get("/hard", response_class=HTMLResponse)
+def hard() -> HTMLResponse:
+    """Every awkward thing a real website does, on one URL. See `hard.py`."""
+    return hard_page()
 
 
 @app.get("/", response_class=HTMLResponse)

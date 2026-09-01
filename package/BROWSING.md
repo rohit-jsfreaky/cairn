@@ -420,6 +420,8 @@ Scheduled as **Phase 2.5, Sep 2-3**. `MASTER-PLAN.md` carries the day-by-day sch
 - **2.5b — waiting: DONE 2026-09-01.** Five real waits (element, gone, text, url,
   idle) and the `attached` → `visible` fix. The viewport was fixed back in 2.5c.
 - **2.5f — page events: DONE 2026-09-01.** Dialogs, tabs, overlays, file choosers. 34 tests.
+- **2.5h — the hard page: DONE 2026-09-01.** Nine obstacles on one URL at
+  `/hard`, and a test that walks all nine in one journey. 19 tests.
 - **2.5g — the MCP surface: DONE 2026-09-01.** `cairn_open` and `cairn_look` are gone.
   One `cairn_act` and one `cairn_read`, both described from the registries. 20 tests.
 - **2.5a — the snapshot: DONE 2026-09-01.** On Playwright's own engine. The
@@ -431,7 +433,23 @@ Scheduled as **Phase 2.5, Sep 2-3**. `MASTER-PLAN.md` carries the day-by-day sch
 - **2.5c — the action set: DONE 2026-09-01.** All 21 `Locator` actions plus 6 page-level
   ones, in one registry, wired into both the cold and the warm path. 46 tests. Five real
   bugs found on the way, listed in section 1.
-- Still to do: 2.5h the hard page kept forever.
+**Phase 2.5 is complete.** All eight steps done, 385 tests passing.
+
+### The finish line, checked honestly
+
+1. **Hard page, every control found and actionable** — ✅ nine obstacles, all exercised.
+2. **Every action and read records, replays and verifies** — ✅ for recording and
+   verifying; every one of the 31 actions and 12 reads has a test, with a guard test that
+   fails if one is added without. **Partly honest:** warm replay runs through the same
+   registry and is proven end to end on the demo site, but not every individual action has
+   been replayed warm. Nothing suggests a gap; it is simply not claimed.
+3. **One `cairn_act` with an `action` argument** — ✅. "Three vague prompts route to the
+   right action" is **not** tested: it needs a model, and this project has no API key by
+   design. What is tested instead is that every action name appears in the one description,
+   generated from the registry so it cannot drift.
+4. **Dialog recorded with its message, replay stops if it changed** — ✅.
+5. **Cookie banner learned once, dismissed on every later run** — ✅, after two bugs were
+   found while checking this exact claim.
 
 ### 2.5a: what the snapshot change actually bought
 

@@ -3,10 +3,14 @@
 The demo billing site lives in the engine's test folder. It is loaded here by file path
 rather than by putting that folder on `sys.path`, because both folders have a `tests`
 package and the import would collide. One demo site is better than two that can drift.
+
+It is loaded as a package rather than as a single file, because it is one: `app.py` imports
+`hard.py` beside it, and a module loaded on its own cannot resolve a relative import.
 """
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import socket
 import sys
@@ -18,17 +22,27 @@ from pathlib import Path
 import pytest
 import uvicorn
 
-DEMO_SITE = Path(__file__).resolve().parents[2] / "package" / "tests" / "demo_site" / "app.py"
+DEMO_SITE = Path(__file__).resolve().parents[2] / "package" / "tests" / "demo_site"
+
+
+DEMO_PACKAGE = "cairn_demo_site"
 
 
 def _load_demo_app():
-    spec = importlib.util.spec_from_file_location("cairn_demo_site", DEMO_SITE)
+    """Import the demo site under a name of our own, so its own imports resolve."""
+    spec = importlib.util.spec_from_file_location(
+        DEMO_PACKAGE,
+        DEMO_SITE / "__init__.py",
+        submodule_search_locations=[str(DEMO_SITE)],
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load the demo site from {DEMO_SITE}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module.app
+
+    package = importlib.util.module_from_spec(spec)
+    sys.modules[DEMO_PACKAGE] = package
+    spec.loader.exec_module(package)
+
+    return importlib.import_module(f"{DEMO_PACKAGE}.app").app
 
 
 def _free_port() -> int:

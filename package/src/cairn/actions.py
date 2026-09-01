@@ -215,6 +215,16 @@ ACTIONS: dict[str, ActionSpec] = {
         needs_target=False,
         value_means='"down", "up", "top", "bottom", or a number of pixels',
     ),
+    "dismiss_when_seen": ActionSpec(
+        "dismiss_when_seen",
+        "clear something that covers the page whenever it appears — a cookie banner, a "
+        '"rate us" box, a survey. Learned once against the SITE, so it never becomes a '
+        "step and never has to be handled again on any later run",
+        needs_target=False,
+        value_means="a CSS selector for the thing to click, such as #accept-cookies",
+        recordable=False,
+        session_handled=True,
+    ),
     "new_tab": ActionSpec(
         "new_tab",
         "open a new empty tab and continue in it",
@@ -475,6 +485,11 @@ def _wait_for(page: Page, t: _T | None, value: str | None, second: _T | None) ->
     waits.wait_for(value or "idle", page=page)
 
 
+def _dismiss_when_seen(page: Page, t: _T | None, value: str | None, second: _T | None) -> None:
+    # Unreachable: the Session handles it, because it also has to reach memory.
+    raise AssertionError("dismiss_when_seen should have been handled by the session")
+
+
 def _new_tab(page: Page, t: _T | None, value: str | None, second: _T | None) -> None:
     # Unreachable, like _switch_tab: the Session owns the tab list.
     raise AssertionError("new_tab should have been handled by the session")
@@ -517,6 +532,7 @@ _RUNNERS: dict[str, Any] = {
     "wait_for": _wait_for,
     "switch_tab": _switch_tab,
     "new_tab": _new_tab,
+    "dismiss_when_seen": _dismiss_when_seen,
 }
 
 # These have a sensible default, so a missing value is not an error.
