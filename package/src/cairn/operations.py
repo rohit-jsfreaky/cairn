@@ -205,6 +205,10 @@ class Session:
             self.browser.switch_tab(value or LATEST_TAB)
             self._snapshot = None
             return
+        if action == "new_tab":
+            self.browser.new_tab(value or None)
+            self._snapshot = None
+            return
         raise ActionFailed(f"{action} is marked session-handled but nothing handles it")
 
     def _element_for(self, ref: str | None) -> Element:

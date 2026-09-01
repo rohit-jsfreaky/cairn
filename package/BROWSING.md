@@ -296,17 +296,21 @@ frame-specific code. Durable locators inside frames still need thought — see O
 | `pause`, `pick_locator` | **no** | interactive debugging |
 | `screenshot` | **later** | for the dashboard and for explaining a repair, never a step |
 
-## 5. The context — `BrowserContext` (40 methods)
+## 5. The context — `BrowserContext` (40 methods) — ✅ BUILT (2026-09-01)
+
+Tested in `tests/test_context.py`. Most of this class is deliberately absent: cookies
+and storage are already handled by keeping a whole browser profile, which is stronger
+than replaying a saved blob.
 
 | Playwright | in? | why |
 |---|---|---|
 | `storage_state` / `set_storage_state` | **already solved** | we keep a whole browser profile, which is stronger |
 | `cookies` / `add_cookies` / `clear_cookies` | **no** | the profile handles it |
-| `grant_permissions` | **yes, narrow** | a site asking for notifications mid-run blocks it. Deny by default |
-| `set_geolocation` | **maybe** | some dashboards are region-dependent. Low priority |
+| `grant_permissions` | **built** | nothing is granted unless a caller asks. A site that wants notifications puts a prompt over the page, and a prompt blocks everything behind it. Denying is silent, and silence is what an unattended agent needs |
+| `set_geolocation` | **built** | `Browser(geolocation=(lat, lon))`. Passing one grants the geolocation permission automatically — granting it *without* a position makes a site wait forever for a fix that never arrives, so the two always travel together. Note: Chrome only hands out a position on a secure origin |
 | `set_offline` | **no** | |
-| `new_page` / `pages` / `expect_page` | **yes** | needed for popup handling |
-| `set_default_timeout` | **yes** | one place to control patience |
+| `new_page` / `pages` / `expect_page` | **built** | `new_tab` opens one we asked for, `switch_tab` moves between them, and a tab the *site* opens is noticed but never switched to. Every tab gets the same dialog and download listeners, attached once each |
+| `set_default_timeout` | **built** | `Browser(timeout_ms=...)` and `set_timeout()`, applied to the context so every call inherits it. Default 15s rather than Playwright's 30s, so a broken site surfaces sooner |
 | `tracing` | **no** | test framework |
 | `route*`, `service_workers`, `new_cdp_session` | **no** | |
 
@@ -411,6 +415,8 @@ Scheduled as **Phase 2.5, Sep 2-3**. `MASTER-PLAN.md` carries the day-by-day sch
 
 ## Progress
 
+- **Section 5, the context: DONE 2026-09-01.** Permissions denied by default,
+  geolocation, `new_tab`, one timeout. 16 tests.
 - **2.5b — waiting: DONE 2026-09-01.** Five real waits (element, gone, text, url,
   idle) and the `attached` → `visible` fix. The viewport was fixed back in 2.5c.
 - **2.5f — page events: DONE 2026-09-01.** Dialogs, tabs, overlays, file choosers. 34 tests.

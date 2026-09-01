@@ -38,7 +38,16 @@ from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PWTimeout
 
 from .models import Locator
-from .waits import LOCATOR_WAIT_MS
+from .waits import DEFAULT_WAIT_MS, LOCATOR_WAIT_MS
+
+# Nothing is granted unless a caller asks for it. A site that wants notifications or
+# your location puts a prompt over the page, and a prompt over the page blocks the run.
+# Denying is silent, and silence is what an unattended agent needs.
+NO_PERMISSIONS: list[str] = []
+
+# Granting geolocation without also setting a position makes the site wait forever for a
+# fix that never arrives, so the two always travel together.
+GEOLOCATION = "geolocation"
 
 # What to do with a confirm box. Accepting is the default because Playwright's own
 # default — dismissing — silently cancels saves and submits.
@@ -389,15 +398,35 @@ class Browser:
         downloads: Path | None = None,
         profile: Path | None = None,
         touch: bool = False,
+        permissions: list[str] | None = None,
+        geolocation: tuple[float, float] | None = None,
+        timeout_ms: int = DEFAULT_WAIT_MS,
     ):
         """`profile=None` means a clean browser every time. Pass a path to stay signed in.
 
         `touch=True` makes this a touch device, which is what the `tap` action needs. It is
         off by default on purpose: some sites serve a different, mobile layout the moment
         they detect touch, and that would change what every other trail sees.
+
+        `permissions` is empty unless asked for. A site that wants notifications or your
+        location puts a prompt over the page, and that prompt blocks everything behind it.
+
+        `geolocation` is a (latitude, longitude) pair, for dashboards that show different
+        numbers by region. Passing one grants the geolocation permission automatically —
+        granting it without a position makes a site wait forever for a fix that never
+        comes.
+
+        `timeout_ms` is the one place patience is set. It applies to every Playwright call
+        that does not name its own, so there is a single number to change when a site is
+        slow rather than a scattering of them.
         """
         self._headless = headless
         self._touch = touch
+        self._timeout_ms = timeout_ms
+        self._geolocation = geolocation
+        self._permissions = list(permissions) if permissions else list(NO_PERMISSIONS)
+        if geolocation is not None and GEOLOCATION not in self._permissions:
+            self._permissions.append(GEOLOCATION)
         self._downloads = Path(downloads) if downloads is not None else DEFAULT_DOWNLOADS
         self._profile = Path(profile) if profile is not None else None
         self._playwright = None
@@ -435,6 +464,7 @@ class Browser:
                     accept_downloads=True,
                     viewport=VIEWPORT,
                     has_touch=self._touch,
+                    **self._context_options(),
                 )
             except Exception as clash:
                 self._playwright.stop()
@@ -449,9 +479,17 @@ class Browser:
         else:
             self._browser = self._playwright.chromium.launch(headless=self._headless)
             self._context = self._browser.new_context(
-                accept_downloads=True, viewport=VIEWPORT, has_touch=self._touch
+                accept_downloads=True,
+                viewport=VIEWPORT,
+                has_touch=self._touch,
+                **self._context_options(),
             )
             self._page = self._context.new_page()
+
+        # One place to control patience, rather than a timeout argument scattered across
+        # every call site.
+        self._context.set_default_timeout(self._timeout_ms)
+        self._context.set_default_navigation_timeout(self._timeout_ms)
 
         self.tabs = [self._page]
         self._watch(self._page)
@@ -460,6 +498,46 @@ class Browser:
         # continues in is a decision to record, not to guess.
         self._context.on("page", self._remember_tab)
         return self
+
+    def _context_options(self) -> dict[str, Any]:
+        """The context settings that are the same however the browser was launched."""
+        options: dict[str, Any] = {"permissions": self._permissions}
+        if self._geolocation is not None:
+            latitude, longitude = self._geolocation
+            options["geolocation"] = {"latitude": latitude, "longitude": longitude}
+        return options
+
+    @property
+    def permissions(self) -> list[str]:
+        """What this browser has been allowed to do. Empty unless a caller asked."""
+        return list(self._permissions)
+
+    @property
+    def timeout_ms(self) -> int:
+        """How long any single Playwright call may take before giving up."""
+        return self._timeout_ms
+
+    def set_timeout(self, timeout_ms: int) -> None:
+        """Change how patient the browser is, for a site that is genuinely slow."""
+        self._timeout_ms = timeout_ms
+        if self._context is not None:
+            self._context.set_default_timeout(timeout_ms)
+            self._context.set_default_navigation_timeout(timeout_ms)
+
+    def new_tab(self, url: str | None = None) -> Page:
+        """Open a tab of our own and continue in it.
+
+        Unlike a tab the site opens, this one was asked for, so switching to it is not a
+        guess.
+        """
+        if self._context is None:
+            raise RuntimeError("the browser is not running")
+        page = self._context.new_page()
+        self._remember_tab(page)
+        self._page = page
+        if url:
+            self.goto(url)
+        return page
 
     def _watch(self, page: Page) -> None:
         """Attach the listeners every tab needs, including tabs the site opens itself.

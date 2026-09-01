@@ -215,6 +215,13 @@ ACTIONS: dict[str, ActionSpec] = {
         needs_target=False,
         value_means='"down", "up", "top", "bottom", or a number of pixels',
     ),
+    "new_tab": ActionSpec(
+        "new_tab",
+        "open a new empty tab and continue in it",
+        needs_target=False,
+        value_means="a url to open in it, or nothing for a blank tab",
+        session_handled=True,
+    ),
     "switch_tab": ActionSpec(
         "switch_tab",
         'continue in another tab. A site that opens a new tab — "open in new tab", most '
@@ -468,6 +475,11 @@ def _wait_for(page: Page, t: _T | None, value: str | None, second: _T | None) ->
     waits.wait_for(value or "idle", page=page)
 
 
+def _new_tab(page: Page, t: _T | None, value: str | None, second: _T | None) -> None:
+    # Unreachable, like _switch_tab: the Session owns the tab list.
+    raise AssertionError("new_tab should have been handled by the session")
+
+
 def _switch_tab(page: Page, t: _T | None, value: str | None, second: _T | None) -> None:
     # Unreachable: `Session._perform` handles every `session_handled` action before it gets
     # here. Present so the registry and the runner table stay in step.
@@ -504,10 +516,11 @@ _RUNNERS: dict[str, Any] = {
     "wait": _wait,
     "wait_for": _wait_for,
     "switch_tab": _switch_tab,
+    "new_tab": _new_tab,
 }
 
 # These have a sensible default, so a missing value is not an error.
-_VALUE_OPTIONAL = {"press", "dispatch_event", "scroll", "wait"}
+_VALUE_OPTIONAL = {"press", "dispatch_event", "scroll", "wait", "new_tab", "wait_for"}
 
 
 # -------------------------------------------------------------------- helpers

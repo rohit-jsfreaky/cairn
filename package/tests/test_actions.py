@@ -436,6 +436,8 @@ EXERCISED = {
     # Covered in tests/test_page_events.py, which is where the browser events live.
     "wait_for",
     "switch_tab",
+    # Covered in tests/test_context.py, with the rest of the browser-context work.
+    "new_tab",
 }
 
 

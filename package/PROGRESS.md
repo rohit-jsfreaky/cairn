@@ -274,6 +274,26 @@ attached twice when a tab was seen again, so the same file was queued twice and 
 already-saved download fails — the file silently never reached disk. Listeners are now
 attached once per page.
 
+### Section 5 is DONE (2026-09-01) — the browser context
+
+Four things, 16 tests in `tests/test_context.py`:
+
+- **Permissions are denied by default.** A site asking for notifications puts a prompt over
+  the page, and that prompt blocks everything behind it. There is nobody there to answer
+  it. `Browser(permissions=[...])` grants one when a site genuinely needs it.
+- **Geolocation.** `Browser(geolocation=(lat, lon))`. Passing one grants the geolocation
+  permission automatically, because granting it *without* a position makes a site wait
+  forever for a fix that never comes. Chrome only hands out a position on a secure origin —
+  `about:blank` is not one, which is why the test asks from the demo server.
+- **`new_tab`.** A tab we asked for, unlike one the site opened, so switching to it is not a
+  guess. It gets the same dialog and download listeners as any other tab.
+- **One timeout.** `Browser(timeout_ms=...)` and `set_timeout()`, applied to the context so
+  every Playwright call inherits it. Default 15s rather than Playwright's 30s, so a broken
+  site surfaces sooner instead of hanging an agent for half a minute per step.
+
+Cookies and storage stay out: keeping a whole browser profile already covers them, and does
+it better than replaying a saved blob.
+
 ## Next action
 
 **2.5a — the snapshot**, then 2.5b (waiting), 2.5d (reading), 2.5e (locators), 2.5f (events),
@@ -296,6 +316,8 @@ is the biggest remaining gap between "demo" and "product".
 ## Session log
 
 - **2026-08-31** — folder created, plan written. No code.
+- **2026-09-01 (later)** — BROWSING.md section 5: permissions, geolocation, new_tab,
+  one timeout. 16 tests. 278 engine + 36 MCP pass.
 - **2026-09-01 (later)** — Phases 2.5b + 2.5f: five real waits, the attached→visible
   fix, dialogs, tabs, overlays, file choosers. 34 tests. 262 engine + 36 MCP pass.
 - **2026-09-01 (later)** — Phase 2.5e: nine locator kinds plus nth/has_text
