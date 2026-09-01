@@ -81,6 +81,22 @@ cairn run "download this month's invoice" --site billing.example.com   # nothing
 Automated in `package/tests/test_deletion_gate.py`. It needs **no API key**, so anyone can run
 it in ten seconds.
 
+## Install
+
+Not on PyPI yet, so install from this repo:
+
+```bash
+git clone https://github.com/rohit-jsfreaky/cairn && cd cairn
+python -m venv .venv
+.venv/Scripts/python -m pip install -e package -e mcp
+.venv/Scripts/playwright install chromium
+
+claude mcp add cairn -- /absolute/path/to/cairn/.venv/Scripts/cairn-mcp.exe
+```
+
+Cursor and Codex config, and a four-step demo you can run in ten minutes, are in
+[`mcp/README.md`](mcp/README.md).
+
 ## Repo map
 
 | folder | what |
@@ -98,8 +114,8 @@ Plans live in `MASTER-PLAN.md` and each folder's `PLAN.md`. Live state is in `PR
 |---|---|---|
 | 0 | Setup, prove Sibyl round-trips across a fresh process | **done** |
 | 1 | `package/` — the engine | **built**, 72 tests pass |
-| 2 | `mcp/` — the MCP server | next |
-| 3 | `backend/` | not started |
+| 2 | `mcp/` — the MCP server | **done**, finish line passed live |
+| 3 | `backend/` | next |
 | 4 | `frontend/` dashboard | not started |
 | 5 | Base x402 playbook transfer | blocked, cuttable |
 | — | `frontend/` landing page | **done** |

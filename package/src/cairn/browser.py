@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from playwright.sync_api import Locator as PWLocator
@@ -23,6 +24,11 @@ from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PWTimeout
 
 from .models import Locator
+
+# Where downloaded files land unless a caller says otherwise. A default matters: a task
+# like "download this month's invoice" is not done if the file only existed inside a
+# temporary browser profile that gets deleted when the context closes.
+DEFAULT_DOWNLOADS = Path.home() / ".cairn" / "downloads"
 
 # Collects the controls worth remembering, with everything needed to build locators.
 # Runs in the page, so one round trip returns the whole snapshot.
@@ -193,12 +199,15 @@ class Browser:
 
     def __init__(self, *, headless: bool = True, downloads: Path | None = None):
         self._headless = headless
-        self._downloads = downloads
+        self._downloads = Path(downloads) if downloads is not None else DEFAULT_DOWNLOADS
         self._playwright = None
         self._browser = None
         self._context = None
         self._page: Page | None = None
         self.last_download: str | None = None
+        self.last_download_path: str | None = None
+        self.saved_files: list[str] = []
+        self._pending_downloads: list[Any] = []
 
     # ------------------------------------------------------------- lifecycle
 
@@ -232,10 +241,30 @@ class Browser:
         return self._page
 
     def _remember_download(self, download) -> None:
+        """Queue the download. Do NOT save it here.
+
+        This runs inside Playwright's event callback, and calling `save_as` from there
+        while another sync call is still in flight fails with "Download.save_as:
+        canceled". So the file is only queued, and `flush_downloads` writes it once the
+        action that triggered it has finished.
+        """
         self.last_download = download.suggested_filename
-        if self._downloads is not None:
+        self._pending_downloads.append(download)
+
+    def flush_downloads(self) -> None:
+        """Write any queued downloads to disk.
+
+        Playwright throws its temporary copy away when the context closes, so a download
+        that is never saved is a download that never happened as far as the user is
+        concerned. Called after every action that can trigger one.
+        """
+        while self._pending_downloads:
+            download = self._pending_downloads.pop(0)
             self._downloads.mkdir(parents=True, exist_ok=True)
-            download.save_as(self._downloads / download.suggested_filename)
+            destination = self._downloads / download.suggested_filename
+            download.save_as(destination)
+            self.last_download_path = str(destination)
+            self.saved_files.append(str(destination))
 
     # ----------------------------------------------------------------- doing
 
@@ -286,6 +315,7 @@ class Browser:
     def click(self, target: PWLocator) -> None:
         target.click()
         self.page.wait_for_load_state("domcontentloaded")
+        self.flush_downloads()
 
     def fill(self, target: PWLocator, value: str) -> None:
         target.fill(value)
@@ -293,6 +323,7 @@ class Browser:
     def press(self, target: PWLocator, key: str) -> None:
         target.press(key)
         self.page.wait_for_load_state("domcontentloaded")
+        self.flush_downloads()
 
     def select(self, target: PWLocator, value: str) -> None:
         target.select_option(value)

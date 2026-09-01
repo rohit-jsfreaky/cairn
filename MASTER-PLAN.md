@@ -28,7 +28,7 @@ Build order follows dependencies: package → mcp → backend → frontend.
 
 ---
 
-## Phase 0 — Setup · Aug 31 / Sep 1
+## Phase 0 — Setup · Aug 31 / Sep 1  — PASSED 2026-09-01
 
 - Register on hack.sibyllabs.org (closes Aug 31, 23:59 UTC)
 - Ask in Discord: testnet OK for Base bonus? scaffolding before Sep 1 OK if declared?
@@ -38,7 +38,7 @@ Build order follows dependencies: package → mcp → backend → frontend.
 **FINISH LINE:** a 5-line Python script writes an entity with `sibyl-memory-client`, then a
 SECOND fresh process reads it back. Memory round-trip proven on this Windows machine.
 
-## Phase 1 — The engine · Sep 1–4 · `package/` → `package/PLAN.md`
+## Phase 1 — The engine · Sep 1–4 · `package/` → `package/PLAN.md`  — BUILT 2026-09-01
 
 Browser control, playbook memory, deterministic replay, verification, self-repair. No LLM
 inside — the engine exposes operations; whoever calls them does the thinking.
@@ -51,7 +51,7 @@ inside — the engine exposes operations; whoever calls them does the thinking.
 4. `cairn forget --site X` → replay has nothing to follow and reports it. Automated in
    `tests/test_deletion_gate.py` — the judges' litmus test, one command.
 
-## Phase 2 — MCP server · Sep 4–5 · `mcp/` → `mcp/PLAN.md`
+## Phase 2 — MCP server · Sep 4–5 · `mcp/` → `mcp/PLAN.md`  — BUILT 2026-09-01
 
 **This is the product.** Cairn as MCP tools, so Claude Code / Codex / Cursor becomes the brain.
 

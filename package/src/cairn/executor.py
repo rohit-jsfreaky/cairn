@@ -78,6 +78,9 @@ class ReplayResult:
     metrics: RunMetrics
     repair: RepairRequest | None = None
     reason: str = ""
+    saved_files: list[str] = field(default_factory=list)
+    """Files this run actually wrote to disk. A "download the invoice" task is not done
+    until there is a real file, so replay reports paths rather than just filenames."""
 
     @property
     def needs_repair(self) -> bool:
@@ -114,6 +117,7 @@ class Executor:
         """
         playbook = self._load(domain)
         started = time.perf_counter()
+        self.browser.saved_files.clear()
         self.events.emit(RunStarted(domain=domain, task=playbook.task, mode="warm"))
 
         metrics = RunMetrics(
@@ -154,10 +158,16 @@ class Executor:
                 )
             )
             self._finish(playbook, metrics, started, succeeded=False)
-            return ReplayResult(ok=False, metrics=metrics, repair=request, reason=outcome.reason)
+            return ReplayResult(
+                ok=False,
+                metrics=metrics,
+                repair=request,
+                reason=outcome.reason,
+                saved_files=list(self.browser.saved_files),
+            )
 
         self._finish(playbook, metrics, started, succeeded=True)
-        return ReplayResult(ok=True, metrics=metrics)
+        return ReplayResult(ok=True, metrics=metrics, saved_files=list(self.browser.saved_files))
 
     # ------------------------------------------------------------ one step
 

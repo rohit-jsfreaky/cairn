@@ -98,6 +98,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     finally:
         browser.stop()
 
+    for saved in result.saved_files:
+        print(f"  {TICK} saved  {saved}")
+
     if result.needs_repair and result.repair is not None:
         print("  hand this to your AI:\n")
         print(json.dumps(result.repair.to_dict(), indent=2)[:1200])

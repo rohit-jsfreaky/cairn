@@ -159,9 +159,9 @@ the band and the top.
 
 ## MCP SDK candidates (verified on PyPI, 2026-08-31)
 
-- `mcp` 2.1.1 — official Model Context Protocol SDK
-- `fastmcp` 3.4.7 — "the fast, Pythonic way to build MCP servers and clients"
-- Decide in Phase 2a after opening both docs; record the choice and reason here.
+- ~~`mcp` 2.1.1~~ — wrong, that version does not exist. Real: **`mcp` 1.29.1**.
+- `fastmcp` 3.4.7 — not used, see the decision below.
+- DECIDED 2026-09-01 — see "MCP SDK decision".
 
 ## Tailwind v4.3 + Next.js 16 install (2026-09-01, tailwindcss.com/docs/installation/framework-guides/nextjs AND nextjs.org/docs/app/getting-started/css, page dated Aug 25 2026)
 
@@ -353,6 +353,45 @@ Errors to catch: `NotFoundError`, `ConflictError`, `CapExceededError`, `SchemaEr
 **PHASE 0 FINISH LINE PASSED (2026-09-01).** Process A wrote an entity, exited; a second,
 separate process read it back. Windows paths work with the default location
 `C:\Users\<user>\.sibyl-memory\memory.db`. Open question 5 in this file is now closed.
+
+## MCP SDK decision — CLOSED 2026-09-01
+
+**Chosen: the official `mcp` SDK's built-in `mcp.server.fastmcp.FastMCP` (mcp 1.29.1).**
+The separate `fastmcp` package is NOT used.
+
+Three reasons, in order of weight:
+
+1. `mcp` is already installed as a dependency of `sibyl-memory-cli`, so this adds nothing.
+   `fastmcp` would be a second framework doing the same job.
+2. The official SDK **bundles** the FastMCP decorator API at `mcp.server.fastmcp`. The
+   ergonomic `@server.tool()` style was the only reason to reach for the standalone package.
+3. **Sibyl's own MCP server uses exactly this.** `sibyl_memory_mcp/server.py` does
+   `from mcp.server.fastmcp import FastMCP`, `build_server() -> FastMCP`, `@mcp.tool()`
+   returning `{"ok": True, ...}` dicts, and a thin `__main__.py`. Same sponsor, same shape —
+   read the installed source rather than the docs, which is a stronger signal anyway.
+
+Also corrected: `RESEARCH.md` recorded `mcp 2.1.1` on 08-31. There is no such version; the
+real one is **1.29.1**.
+
+### Behaviour worth knowing
+
+- `FastMCP.call_tool()` returns a **tuple** `(content_blocks, structured_result)`, not a
+  dict and not a bare sequence. The structured half is what a host AI receives.
+- Sync tool functions are fine, but see the threading note below.
+
+## Playwright inside an MCP server (2026-09-01)
+
+Playwright's **sync** API binds every object to the thread that created it and refuses to
+start inside a running asyncio loop. An MCP server violates both: it runs a loop, and it
+dispatches each tool call to whichever worker thread is free.
+
+Fix, implemented as `cairn/worker.py`: the browser gets **one dedicated thread**, and every
+call is posted to it through a queue with a `concurrent.futures.Future` to carry the result
+or the exception back. `cairn_look` and `cairn_act` landing on different threads then does
+not matter, because the browser only ever sees one.
+
+Put in the engine rather than in `mcp/`, because it is a property of driving a browser, not
+of speaking MCP — the backend in Phase 3 needs exactly the same thing.
 
 ## OPEN QUESTIONS (do not build on assumptions for these)
 

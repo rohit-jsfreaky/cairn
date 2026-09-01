@@ -101,7 +101,9 @@ class Session:
         self.tool_calls += 1
         url_before = self.browser.page.url if action != "goto" else ""
         text_before = self.browser.text() if action != "goto" else ""
+        self.browser.flush_downloads()
         self.browser.last_download = None
+        self.browser.last_download_path = None
 
         element = self._perform(action, ref=ref, value=value)
 
@@ -125,6 +127,7 @@ class Session:
             "url": entry.url_after,
             "navigated": entry.navigated,
             "download": entry.download,
+            "saved_to": self.browser.last_download_path,
         }
 
     def _perform(self, action: Action, *, ref: str | None, value: str | None) -> Element | None:
@@ -217,6 +220,7 @@ def check_postcondition(browser: Browser, expected: Postcondition) -> bool:
         # grace period rather than making every other step pay for a fixed wait.
         if browser.last_download is None:
             browser.page.wait_for_timeout(DOWNLOAD_GRACE_MS)
+        browser.flush_downloads()
         return browser.last_download is not None
     return False
 

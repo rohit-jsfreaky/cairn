@@ -21,12 +21,18 @@ whole playbook stale.
 
 Run it:
 
-    python package/tests/demo_site/app.py
+    python package/tests/demo_site/app.py            # port 8787
+    python package/tests/demo_site/app.py --port 9000
 
 Then open http://127.0.0.1:8787  and  http://127.0.0.1:8787/?variant=b
 """
 
 from __future__ import annotations
+
+import argparse
+import socket
+import sys
+from pathlib import Path
 
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -208,11 +214,46 @@ def invoice_file(invoice_id: str) -> Response:
     )
 
 
-if __name__ == "__main__":
+def _port_is_free(host: str, port: int) -> bool:
+    with socket.socket() as probe:
+        return probe.connect_ex((host, port)) != 0
+
+
+def main() -> int:
+    """Run the demo site, and say something useful if the port is already taken."""
     import uvicorn
 
+    parser = argparse.ArgumentParser(description="Acme Billing — Cairn's practice site")
+    parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--host", default="127.0.0.1")
+    args = parser.parse_args()
+
+    if not _port_is_free(args.host, args.port):
+        script = Path(__file__).name
+        print(
+            "\n".join(
+                [
+                    f"Port {args.port} is already in use.",
+                    "Most likely this demo site is already running somewhere.",
+                    "",
+                    f"  open it      http://{args.host}:{args.port}/",
+                    f"  or use       python {script} --port {args.port + 1}",
+                    f"  to stop it   netstat -ano | findstr :{args.port}",
+                    "               taskkill /PID <pid> /F",
+                ]
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+    base = f"http://{args.host}:{args.port}"
     print("Acme Billing demo site")
-    print("  variant A  http://127.0.0.1:8787/            original")
-    print("  variant B  http://127.0.0.1:8787/?variant=b  real break, needs repair")
-    print("  variant C  http://127.0.0.1:8787/?variant=c  cosmetic only, survives")
-    uvicorn.run(app, host="127.0.0.1", port=8787, log_level="warning")
+    print(f"  variant A  {base}/            original")
+    print(f"  variant B  {base}/?variant=b  real break, needs repair")
+    print(f"  variant C  {base}/?variant=c  cosmetic only, survives")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

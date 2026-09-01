@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cairn-mcp"
+version = "0.1.0"
+description = "Cairn as MCP tools: a browser with a memory, for Claude Code, Cursor and Codex."
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Rohit Kashyap" }]
+dependencies = [
+    "cairn",
+    "mcp>=1.29.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+cairn-mcp = "cairn_mcp.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cairn_mcp"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

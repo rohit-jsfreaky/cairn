@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "cairn": {
+      "command": ".venv/Scripts/cairn-mcp.exe",
+      "args": [],
+      "env": {}
+    }
+  }
+}

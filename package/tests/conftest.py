@@ -53,8 +53,9 @@ def demo_server() -> Iterator[str]:
 
 
 @pytest.fixture
-def browser() -> Iterator[Browser]:
-    with Browser(headless=True) as running:
+def browser(tmp_path) -> Iterator[Browser]:
+    """Downloads go into the test's own folder, never the real ~/.cairn/downloads."""
+    with Browser(headless=True, downloads=tmp_path / "downloads") as running:
         yield running
 
 

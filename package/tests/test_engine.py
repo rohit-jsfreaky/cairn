@@ -34,9 +34,23 @@ class TestColdRun:
     """Finish line 1: the task completes and a playbook appears in memory."""
 
     def test_the_task_actually_completes(self, learned):
-        _, session = learned
+        """A file on disk, not just a download event.
 
-        assert session.trace[-1].download is not None, "the invoice should have downloaded"
+        The first version of this test only checked that Playwright fired a download
+        event. It passed for a week while the file was being thrown away when the browser
+        context closed, which a real Claude Code session caught immediately. A download
+        task is done when there is a file you can open.
+        """
+        from pathlib import Path
+
+        _, session = learned
+        last = session.trace[-1]
+
+        assert last.download is not None, "the invoice should have downloaded"
+        saved = session.browser.last_download_path
+        assert saved is not None, "the download was never written anywhere"
+        assert Path(saved).is_file(), f"no file at {saved}"
+        assert Path(saved).stat().st_size > 0, "the saved file is empty"
 
     def test_a_playbook_lands_in_memory(self, learned, store: CairnStore, demo_server: str):
         playbook, _ = learned
