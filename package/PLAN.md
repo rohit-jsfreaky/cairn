@@ -114,7 +114,7 @@ Two decisions were locked by Rohit on 2026-09-01 and are not open again:
 - New postcondition kinds: value_is, checked_is, element_gone, count_is, attribute_is.
 - OK when: a number on a page can be read back, and a `fill` is verified by reading a value.
 
-### 2.5e. More ways to find things (Sep 3)
+### 2.5e. More ways to find things (Sep 3) - DONE 2026-09-01
 - Add locator kinds: label, placeholder, test_id, title, alt, and nth/filtered-by-text.
 - `test_id` first when present - test ids almost never change, so it is the most durable
   locator available.

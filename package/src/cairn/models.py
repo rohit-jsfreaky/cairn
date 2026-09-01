@@ -14,7 +14,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-LocatorKind = Literal["role", "text", "css", "structural"]
+LocatorKind = Literal[
+    "test_id",
+    "structural",
+    "label",
+    "role",
+    "placeholder",
+    "alt",
+    "title",
+    "text",
+    "css",
+]
 
 # How much a single confirmed hit or miss moves a locator's health.
 _HIT_WEIGHT = 1.0
@@ -37,6 +47,13 @@ class Locator:
 
     kind: LocatorKind
     value: str
+    # Refinements. These are not kinds of their own because they compose with every kind:
+    # "the third row" and "the row containing September" are narrowings of any locator, not
+    # separate ways of searching.
+    nth: int | None = None
+    """Which match to take when several look alike. 0 is the first, -1 the last."""
+    has_text: str | None = None
+    """Narrow to the match containing this text — how you find one row in a list."""
     hits: int = 0
     misses: int = 0
     last_ok: str | None = None
@@ -67,10 +84,21 @@ class Locator:
         """
         return self.misses > 0 and self.confidence == 0.0
 
+    def describe(self) -> str:
+        """How this locator reads in a repair request or an export."""
+        written = f"{self.kind}={self.value}"
+        if self.has_text:
+            written += f" containing {self.has_text!r}"
+        if self.nth is not None:
+            written += f" [{self.nth}]"
+        return written
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": self.kind,
             "value": self.value,
+            **({"nth": self.nth} if self.nth is not None else {}),
+            **({"has_text": self.has_text} if self.has_text else {}),
             "hits": self.hits,
             "misses": self.misses,
             "last_ok": self.last_ok,
@@ -81,6 +109,8 @@ class Locator:
         return cls(
             kind=raw["kind"],
             value=raw["value"],
+            nth=raw.get("nth"),
+            has_text=raw.get("has_text"),
             hits=raw.get("hits", 0),
             misses=raw.get("misses", 0),
             last_ok=raw.get("last_ok"),

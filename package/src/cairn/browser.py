@@ -25,6 +25,7 @@ Three things here matter more than the rest:
 
 from __future__ import annotations
 
+import json
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -89,9 +90,32 @@ _COLLECT_JS = """
     }
     const text = (el.innerText || '').trim();
     if (text) return text.replace(/\\s+/g, ' ').slice(0, 80);
+    // An image has no text of its own; its alt is what a person would call it.
+    const alt = (el.getAttribute('alt') || '').trim();
+    if (alt) return alt;
     const labelled = el.id && document.querySelector(`label[for="${el.id}"]`);
     if (labelled) return (labelled.innerText || '').trim();
     return (el.getAttribute('placeholder') || el.getAttribute('title') || '').trim();
+  };
+
+  // A test id is the most durable handle a page can offer, but there is no one
+  // attribute name for it. Store the name alongside the value so resolving is exact.
+  const testIdOf = (el) => {
+    const names = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy'];
+    for (const name of names) {
+      const found = el.getAttribute(name);
+      if (found) return name + '=' + found;
+    }
+    return null;
+  };
+
+  const labelOf = (el) => {
+    const forId = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+    if (forId) return (forId.innerText || '').trim();
+    const wrapping = el.closest('label');
+    if (wrapping) return (wrapping.innerText || '').trim();
+    const aria = el.getAttribute('aria-label');
+    return aria ? aria.trim() : null;
   };
 
   const cssOf = (el) => {
@@ -124,7 +148,13 @@ _COLLECT_JS = """
     return style.visibility !== 'hidden' && style.display !== 'none';
   };
 
-  const selector = 'a[href], button, input, select, textarea, [role="button"], [role="link"]';
+  const selector = [
+    'a[href]', 'button', 'input', 'select', 'textarea',
+    '[role="button"]', '[role="link"]', '[role="img"]',
+    // An icon button is often an image with nothing but alt text on it. Empty alt means
+    // the image is decorative, and a decorative image is not worth remembering.
+    'img[alt]:not([alt=""])',
+  ].join(', ');
   const out = [];
   document.querySelectorAll(selector).forEach((el, i) => {
     if (!visible(el)) return;
@@ -144,11 +174,38 @@ _COLLECT_JS = """
       href: el.getAttribute('href'),
       type: el.getAttribute('type'),
       value: value,
+      test_id: testIdOf(el),
+      label: labelOf(el),
+      placeholder: el.getAttribute('placeholder'),
+      title: el.getAttribute('title'),
+      alt: el.getAttribute('alt'),
     });
+  });
+
+  // Which of the look-alikes is this? Three "Edit" buttons need an index, or every one of
+  // them stores the same locator and replay picks whichever comes first.
+  const seen = {};
+  out.forEach((item) => {
+    const key = item.role + '|' + item.name;
+    seen[key] = (seen[key] || 0) + 1;
+  });
+  const counted = {};
+  out.forEach((item) => {
+    const key = item.role + '|' + item.name;
+    item.twins = seen[key];
+    counted[key] = (counted[key] || 0);
+    item.nth = counted[key];
+    counted[key] += 1;
   });
   return out;
 }
 """
+
+
+# Tags whose accessible name does not come from text inside them: a form field is named by
+# a `<label>` beside it, and an image by its alt attribute. Searching the page for that text
+# would find the label, or nothing at all.
+_NAMED_FROM_ELSEWHERE = {"input", "select", "textarea", "img"}
 
 
 @dataclass
@@ -162,27 +219,74 @@ class Element:
     css: str
     href: str | None = None
     type: str | None = None
+    test_id: str | None = None
+    label: str | None = None
+    placeholder: str | None = None
+    title: str | None = None
+    alt: str | None = None
+    nth: int = 0
+    """Which of the look-alikes this is, among elements with the same role and name."""
+    twins: int = 1
+    """How many elements share this role and name. More than one means a bare role
+    locator is ambiguous and needs `nth` pinned to it."""
     value: str | None = None
     """What the field currently holds. A page can arrive with fields already filled, and
     an AI that cannot see that will ask the user for something already on screen. Password
     boxes report "(filled)" rather than their contents."""
 
     def locators(self) -> list[Locator]:
-        """Four ways to find this element, most durable first.
+        """Every way we know to find this element again, most durable first.
 
-        The order is a claim about what survives a redesign: a link target usually
-        outlives its label, and a label usually outlives its CSS id. Replay reorders
-        these by measured confidence once they have a track record.
+        The order is a claim about what survives a redesign. A test id is written for
+        machines and almost never touched. A link target usually outlives its label, and a
+        label usually outlives a CSS id, which is the first thing a rewrite throws away.
+
+        Replay reorders these by measured confidence once they have a track record, so the
+        order here only decides what gets tried on the very first replay.
         """
         found: list[Locator] = []
+
+        if self.test_id:
+            found.append(Locator("test_id", self.test_id))
         if self.href:
             found.append(Locator("structural", f"href={href_path(self.href)}"))
+        if self.label:
+            found.append(self._pin(Locator("label", self.label)))
         if self.name:
-            found.append(Locator("role", f"{self.role}|{self.name}"))
-            found.append(Locator("text", self.name))
+            found.append(self._pin(Locator("role", f"{self.role}|{self.name}")))
+        if self.placeholder:
+            found.append(self._pin(Locator("placeholder", self.placeholder)))
+        if self.alt:
+            found.append(self._pin(Locator("alt", self.alt)))
+        if self.title:
+            found.append(self._pin(Locator("title", self.title)))
+        if self.name and self._text_is_its_own:
+            found.append(self._pin(Locator("text", self.name)))
         if self.css:
             found.append(Locator("css", self.css))
         return found
+
+    @property
+    def _text_is_its_own(self) -> bool:
+        """Is this element's name the text inside it, rather than text pointing at it?
+
+        A form field takes its name from a `<label>` that sits beside it, so searching the
+        page for that text finds the label, not the field. Filling a label does nothing.
+        Links and buttons contain their own words, so for them a text locator is sound.
+        """
+        return self.tag not in _NAMED_FROM_ELSEWHERE
+
+    def _pin(self, locator: Locator) -> Locator:
+        """Add a position to a locator that would otherwise be ambiguous.
+
+        Three buttons all called "Edit" would each store the same locator, and every replay
+        would press the first one. Pinning the index is what makes row three actually row
+        three. Left alone when the element is unique, because an index is one more thing
+        that can go stale.
+        """
+        if self.twins > 1:
+            locator.nth = self.nth
+        return locator
 
     def to_dict(self) -> dict[str, str | None]:
         described: dict[str, str | None] = {
@@ -194,6 +298,15 @@ class Element:
         }
         if self.value:
             described["value"] = self.value
+        for name, extra in (
+            ("test_id", self.test_id),
+            ("label", self.label),
+            ("placeholder", self.placeholder),
+        ):
+            if extra:
+                described[name] = extra
+        if self.twins > 1:
+            described["nth"] = str(self.nth)
         return described
 
 
@@ -412,11 +525,39 @@ class Browser:
             return None
 
     def _to_playwright(self, locator: Locator) -> PWLocator | None:
+        """Turn one stored locator back into a Playwright locator, refinements applied."""
+        base = self._base_locator(locator)
+        if base is None:
+            return None
+        if locator.has_text:
+            base = base.filter(has_text=locator.has_text)
+        if locator.nth is not None:
+            base = base.nth(locator.nth)
+        return base
+
+    def _base_locator(self, locator: Locator) -> PWLocator | None:
         page = self.page
         if locator.kind == "css":
             return page.locator(locator.value)
         if locator.kind == "text":
             return page.get_by_text(locator.value, exact=True)
+        if locator.kind == "label":
+            return page.get_by_label(locator.value, exact=True)
+        if locator.kind == "placeholder":
+            return page.get_by_placeholder(locator.value, exact=True)
+        if locator.kind == "title":
+            return page.get_by_title(locator.value, exact=True)
+        if locator.kind == "alt":
+            return page.get_by_alt_text(locator.value, exact=True)
+        if locator.kind == "test_id":
+            # Not `get_by_test_id`: that reads one globally configured attribute name, and
+            # real sites use data-testid, data-test-id, data-test, data-qa and data-cy. The
+            # name is stored with the value, so this matches whichever the site actually
+            # uses without any global setting.
+            name, _, wanted = locator.value.partition("=")
+            if not wanted:
+                return None
+            return page.locator(f"[{name}={json.dumps(wanted)}]")
         if locator.kind == "role":
             role, _, name = locator.value.partition("|")
             if not name:

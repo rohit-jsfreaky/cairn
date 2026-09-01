@@ -212,6 +212,36 @@ Two judgement calls worth recording:
 forgot the cold path, so downloads were flushed before the download event arrived and the
 file was never written to disk. Fixed by settling after every action on both paths.
 
+### 2.5e is DONE (2026-09-01) — finding things
+
+Four locator kinds became **nine**: `test_id`, `structural`, `label`, `role`,
+`placeholder`, `alt`, `title`, `text`, `css`. 34 tests in `tests/test_locators.py`.
+
+Two design calls worth recording:
+
+- **`nth` and `has_text` are refinements, not kinds.** "The third row" and "the row
+  containing September" narrow *any* locator, so they are two optional fields on `Locator`
+  that compose with all nine kinds — rather than two more kinds that would each only work
+  one way. `first` is `nth=0`, `last` is `nth=-1`. They are only attached when an element
+  actually has look-alikes, because an index is one more thing that can go stale.
+- **Test ids do not go through `get_by_test_id`.** That method reads one globally
+  configured attribute name, and real sites use five different ones. Cairn stores the
+  attribute *name* with the value, so it matches whichever the site uses with no global
+  setting. Still ranked first — a test id is written for machines and rarely touched.
+
+**Two bugs, both caught by one test** — `test_every_locator_a_real_element_offers_actually_resolves`,
+which walks every locator an element offers and demands it find that element:
+
+1. **A form field was being given a `text` locator.** The field's name comes from the
+   `<label>` beside it, so the text search found **the label, not the field**. Filling a
+   label does nothing. That would have failed on the first login form we ever replayed.
+2. **`alt` could resolve but was never captured** — the collector never looked at `<img>`.
+   The kind existed and no real page could produce one. Images with non-empty alt are now
+   collected; empty alt means decorative and is skipped.
+
+A locator that is stored but never resolves is worse than none: it costs a failed attempt
+on every replay, forever.
+
 ## Next action
 
 **2.5a — the snapshot**, then 2.5b (waiting), 2.5d (reading), 2.5e (locators), 2.5f (events),
@@ -234,6 +264,9 @@ is the biggest remaining gap between "demo" and "product".
 ## Session log
 
 - **2026-08-31** — folder created, plan written. No code.
+- **2026-09-01 (later)** — Phase 2.5e: nine locator kinds plus nth/has_text
+  refinements, 34 tests. 228 engine + 36 MCP pass. Two bugs found by the test that
+  demands every stored locator actually resolve to its own element.
 - **2026-09-01 (later)** — Phase 2.5d: 12 read kinds and 5 postcondition kinds,
   40 tests. 194 engine + 36 MCP pass. Found that adding `settle()` to only one of
   the two paths broke downloads on the other.

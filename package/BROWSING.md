@@ -41,6 +41,7 @@ Measured 2026-09-01, before Phase 2.5 began, and updated as each step lands.
 | | Playwright offers | Cairn had | Cairn has now |
 |---|---|---|---|
 | ways to act on an element | 21 | 4 | **21, plus 6 page-level** ✅ 2.5c |
+| ways to find an element | 10 | 4 | **9, plus 2 refinements** ✅ 2.5e |
 | ways to read from a page | 18 | 1 (page text) | **12, plus 5 new postcondition kinds** ✅ 2.5d |
 | page-level events (dialogs, popups, uploads) | yes | none | none — still to do (2.5f) |
 | frames / shadow DOM | yes | none | none — still to do (2.5a) |
@@ -176,10 +177,13 @@ The existing download test caught it. That test was itself written after an earl
 where it only checked the download *event* and passed for a week while the file was being
 thrown away.
 
-## 3. Finding an element — `Locator` (finding methods)
+## 3. Finding an element — `Locator` (finding methods) — ✅ BUILT (2.5e, 2026-09-01)
 
-We already store four kinds of locator: role, text, css, structural(href). Playwright can
-find in more ways, and each is a candidate for a stored locator kind.
+We stored four kinds of locator: role, text, css, structural(href). Now **nine kinds plus
+two refinements**, so a step has nine chances to survive a redesign instead of four.
+
+Built in `models.py` (the shape) and `browser.py` (capture and resolution), tested in
+`tests/test_locators.py`.
 
 | Playwright | in? | why |
 |---|---|---|
@@ -188,11 +192,37 @@ find in more ways, and each is a candidate for a stored locator kind.
 | `locator(css)` | **have it** | |
 | `get_by_label` | **add** | the right way to find a form field; survives redesigns better than css |
 | `get_by_placeholder` | **add** | ditto |
-| `get_by_test_id` | **add** | when a site has test ids they almost never change — the single most durable locator available |
+| `get_by_test_id` | **added, but not via `get_by_test_id`** | that method reads one globally configured attribute name, and real sites use `data-testid`, `data-test-id`, `data-test`, `data-qa` and `data-cy`. Cairn stores the attribute *name* with the value and matches on it directly, so it works on all five with no global setting. Still ranked first: a test id is written for machines and almost never touched |
 | `get_by_title` / `get_by_alt_text` | **add** | cheap, and images/icons often have nothing else |
-| `filter(has_text=)`, `nth`, `first`, `last` | **add** | "the third row", "the row containing September" — needed for lists |
+| `filter(has_text=)`, `nth`, `first`, `last` | **added, but not as kinds** | these are *refinements*, not ways of searching: "the third row" and "the row containing September" narrow any locator. So they are two optional fields on `Locator` — `nth` and `has_text` — that compose with all nine kinds, rather than two more kinds that would each only work one way. `first` is `nth=0`, `last` is `nth=-1` |
 | `and_` / `or_` | **no** | combining predicates is more expressive than a stored trail needs |
-| `frame_locator` / `content_frame` | **handled** | Playwright's ai-mode refs already reach inside frames (proven: `ref=f1e2`) |
+| `frame_locator` / `content_frame` | **handled** | Playwright's ai-mode refs already reach inside frames (proven: `ref=f1e2`). Comes with 2.5a |
+
+### The ranking, and why it is in this order
+
+Order only decides what gets tried on the *first* replay — after that, measured confidence
+reorders them. But the first replay is the one where a site has already changed.
+
+`test_id` → `structural(href)` → `label` → `role` → `placeholder` → `alt` → `title` →
+`text` → `css`
+
+A test id is written for machines. A link target usually outlives its label. A label
+usually outlives a CSS id, which is the first thing a rewrite throws away.
+
+### Two bugs found here, both by the same test
+
+`test_every_locator_a_real_element_offers_actually_resolves` walks every locator an element
+offers and demands it find *that element*. A locator that is stored but never resolves is
+worse than none — it costs a failed attempt on every single replay.
+
+1. **A form field was given a `text` locator.** A field takes its accessible name from the
+   `<label>` beside it, so searching the page for that text finds **the label, not the
+   field** — and filling a label does nothing. Text locators are now only offered for
+   elements that contain their own words.
+2. **`alt` could resolve but was never captured.** The collector never looked at `<img>` at
+   all, so the kind existed and no real page ever produced one. Images with non-empty alt
+   are now collected — an icon button is often an image with nothing else on it. Empty alt
+   means decorative, and a decorative image is not worth remembering.
 
 **Six more locator kinds means a broken step has six chances to survive instead of four.**
 This is the cheapest reliability we can buy.
@@ -377,10 +407,12 @@ Scheduled as **Phase 2.5, Sep 2-3**. `MASTER-PLAN.md` carries the day-by-day sch
 
 ## Progress
 
+- **2.5e — finding: DONE 2026-09-01.** Nine locator kinds plus `nth` and
+  `has_text` refinements. 34 tests.
 - **2.5d — reading: DONE 2026-09-01.** 12 read kinds and 5 new postcondition kinds,
   built on one shared reading path. 40 tests.
 - **2.5c — the action set: DONE 2026-09-01.** All 21 `Locator` actions plus 6 page-level
   ones, in one registry, wired into both the cold and the warm path. 46 tests. Five real
   bugs found on the way, listed in section 1.
-- Still to do: 2.5a snapshot, 2.5b waiting, 2.5e locators, 2.5f page events, 2.5g the MCP
-  surface, 2.5h the hard page.
+- Still to do: 2.5a snapshot, 2.5b waiting, 2.5f page events, 2.5g the MCP surface,
+  2.5h the hard page.
