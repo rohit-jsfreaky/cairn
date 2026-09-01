@@ -57,6 +57,16 @@ class Locator:
     def record_miss(self) -> None:
         self.misses += 1
 
+    @property
+    def is_dead(self) -> bool:
+        """Has failed and has nothing to show for it, so it is not worth keeping.
+
+        A locator that once worked keeps some confidence after a single miss, so a
+        one-off failure never kills a proven route. One that has never landed and has now
+        failed is just weight in the trail.
+        """
+        return self.misses > 0 and self.confidence == 0.0
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": self.kind,
@@ -209,8 +219,14 @@ class SiteKnowledge:
     """Facts about a site that outlive any particular trail.
 
     A redesign throws away the playbook's locators but not the fact that the site needs
-    two-factor, or which account you log in with. Keeping these separate is why a
-    rebuilt playbook is cheaper than a first visit.
+    two-factor, or which account you log in with, or that it locks you out after five
+    wrong passwords. Keeping these separate is why relearning a rebuilt site is cheaper
+    than a first visit — and it is the reason throwing a stale trail away is safe.
+
+    `notes` is free text on purpose. The useful facts about a real site do not fit a
+    fixed set of fields: "the invoice only appears after the 3rd", "the export takes two
+    minutes", "use the finance login, not the admin one". A closed schema would only
+    capture the easy ones.
     """
 
     domain: str
@@ -219,6 +235,47 @@ class SiteKnowledge:
     needs_2fa: bool = False
     account_hint: str | None = None
     updated_at: str = field(default_factory=utc_now)
+
+    def merge(
+        self,
+        *,
+        fact: str | None = None,
+        needs_login: bool | None = None,
+        needs_2fa: bool | None = None,
+        account_hint: str | None = None,
+    ) -> SiteKnowledge:
+        """Add to what is known. Never replaces the whole record.
+
+        Facts arrive one at a time, from different visits. Overwriting would mean the
+        last thing noticed erases everything learned before it.
+        """
+        if fact:
+            cleaned = fact.strip()
+            if cleaned and cleaned not in self.notes:
+                self.notes.append(cleaned)
+        if needs_login is not None:
+            self.needs_login = needs_login
+        if needs_2fa is not None:
+            self.needs_2fa = needs_2fa
+        if account_hint:
+            self.account_hint = account_hint
+        self.updated_at = utc_now()
+        return self
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.notes or self.needs_login or self.needs_2fa or self.account_hint)
+
+    def summary(self) -> list[str]:
+        """What to hand an AI that is about to walk this site for the first time."""
+        lines = list(self.notes)
+        if self.needs_login:
+            lines.append("this site needs a login")
+        if self.needs_2fa:
+            lines.append("this site asks for a second factor, such as a code")
+        if self.account_hint:
+            lines.append(f"the account used here is {self.account_hint}")
+        return lines
 
     def to_dict(self) -> dict[str, Any]:
         return {

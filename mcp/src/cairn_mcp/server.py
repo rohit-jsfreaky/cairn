@@ -24,7 +24,7 @@ from typing import Any
 
 from cairn.browser import domain_of
 from cairn.executor import Executor, NoTrailError
-from cairn.models import Locator
+from cairn.models import Locator, SiteKnowledge
 from cairn.operations import ActionFailed, Session
 from cairn.store import CairnStore
 from cairn.worker import BrowserWorker
@@ -40,6 +40,12 @@ def log(message: str) -> None:
     print(f"[cairn] {message}", file=sys.stderr, flush=True)
 
 
+def _facts_for(tools: CairnTools, domain: str) -> list[str]:
+    """What Cairn still knows about a site, in plain sentences."""
+    knowledge = tools.store.load_site_knowledge(domain)
+    return knowledge.summary() if knowledge else []
+
+
 def err(problem: BaseException | str) -> dict[str, Any]:
     """A readable message, never a stack trace."""
     return {"ok": False, "error": str(problem)}
@@ -48,9 +54,15 @@ def err(problem: BaseException | str) -> dict[str, Any]:
 class CairnTools:
     """Holds the one browser and the one memory store for this MCP connection."""
 
-    def __init__(self, *, db_path: str | None = None, headless: bool = True):
+    def __init__(
+        self,
+        *,
+        db_path: str | None = None,
+        headless: bool = True,
+        downloads: str | None = None,
+    ):
         self.store = CairnStore(db_path=db_path)
-        self.worker = BrowserWorker(headless=headless)
+        self.worker = BrowserWorker(headless=headless, downloads=downloads)
         self._session: Session | None = None
 
     def session(self) -> Session:
@@ -68,9 +80,14 @@ class CairnTools:
         self._session = None
 
 
-def build_server(*, db_path: str | None = None, headless: bool = True) -> FastMCP:
+def build_server(
+    *,
+    db_path: str | None = None,
+    headless: bool = True,
+    downloads: str | None = None,
+) -> FastMCP:
     """Wire the tools. Kept in a function so tests can build a server without running it."""
-    tools = CairnTools(db_path=db_path, headless=headless)
+    tools = CairnTools(db_path=db_path, headless=headless, downloads=downloads)
 
     server = FastMCP(
         "cairn",
@@ -126,19 +143,45 @@ def build_server(*, db_path: str | None = None, headless: bool = True) -> FastMC
                 lambda browser: Executor(tools.store, browser).run(key, start_url=url)
             )
         except NoTrailError as unknown:
+            facts = _facts_for(tools, key)
             return {
                 "ok": False,
                 "known": False,
                 "site": key,
                 "message": str(unknown),
+                "site_facts": facts,
                 "next": (
                     "Cairn has not walked this site. Explore it once with cairn_open, "
                     "cairn_look and cairn_act, then call cairn_save so this never has to "
                     "happen again."
+                    + (
+                        " site_facts is what Cairn still knows about this site from before "
+                        "— use it so you do not rediscover the same things."
+                        if facts
+                        else " While exploring, call cairn_note for anything worth "
+                        "remembering that is not a step, such as needing a login, a code "
+                        "sent to a phone, or a limit on how often you may try."
+                    )
                 ),
             }
         except Exception as failure:  # noqa: BLE001 - reported, not raised at the client
             return err(failure)
+
+        if result.stale:
+            return {
+                "ok": False,
+                "known": False,
+                "stale": True,
+                "site": key,
+                "message": result.reason,
+                "site_facts": result.site_facts,
+                "next": (
+                    "The site was rebuilt, so the old trail was thrown away but everything "
+                    "Cairn knows about the site was kept. Explore it again with cairn_open, "
+                    "cairn_look and cairn_act — use site_facts so you do not rediscover what "
+                    "is already known — then call cairn_save."
+                ),
+            }
 
         if result.needs_repair and result.repair is not None:
             repair = result.repair.to_dict()
@@ -235,9 +278,21 @@ def build_server(*, db_path: str | None = None, headless: bool = True) -> FastMC
         """
         key = domain_of(site) if "://" in site else site
         playbook = tools.store.load_playbook(key)
+        facts = _facts_for(tools, key)
         if playbook is None:
-            return {"ok": False, "known": False, "site": key, "message": "nothing remembered"}
-        return {"ok": True, "site": key, "playbook": playbook.to_dict()}
+            return {
+                "ok": False,
+                "known": False,
+                "site": key,
+                "site_facts": facts,
+                "message": "no trail remembered for this site",
+            }
+        return {
+            "ok": True,
+            "site": key,
+            "playbook": playbook.to_dict(),
+            "site_facts": facts,
+        }
 
     @server.tool()
     def cairn_forget(site: str) -> dict[str, Any]:
@@ -264,6 +319,58 @@ def build_server(*, db_path: str | None = None, headless: bool = True) -> FastMC
             "message": (
                 "Forgotten. The trail is archived, so cairn_run has nothing to follow and "
                 "this site would have to be learned again from scratch."
+            ),
+        }
+
+    @server.tool()
+    def cairn_note(
+        site: str,
+        fact: str | None = None,
+        needs_login: bool | None = None,
+        needs_2fa: bool | None = None,
+        account: str | None = None,
+    ) -> dict[str, Any]:
+        """Remember a fact about a website that is not a step.
+
+        Steps break when a site is redesigned. Facts do not. "It locks you out after five
+        wrong passwords", "the invoice only appears after the 3rd", "the export takes two
+        minutes", "use the finance login, not the admin one" — these stay true through any
+        redesign, and Cairn hands them back the next time this site has to be learned.
+
+        Call this whenever you notice something while exploring that a person would want
+        told before doing this task themselves. Each call ADDS; nothing is overwritten, so
+        call it as many times as you like.
+
+        Args:
+            site: Domain or full URL.
+            fact: One thing worth remembering, in plain words.
+            needs_login: True if this site requires signing in.
+            needs_2fa: True if it asks for a code or a second factor.
+            account: Which account is used here, e.g. "finance@acme.com".
+        """
+        key = domain_of(site) if "://" in site else site
+        if fact is None and needs_login is None and needs_2fa is None and account is None:
+            return err("give at least one of: fact, needs_login, needs_2fa, account")
+
+        try:
+            knowledge = tools.store.load_site_knowledge(key) or SiteKnowledge(domain=key)
+            knowledge.merge(
+                fact=fact,
+                needs_login=needs_login,
+                needs_2fa=needs_2fa,
+                account_hint=account,
+            )
+            tools.store.save_site_knowledge(knowledge)
+        except Exception as failure:  # noqa: BLE001
+            return err(failure)
+
+        return {
+            "ok": True,
+            "site": key,
+            "known_facts": knowledge.summary(),
+            "message": (
+                "Saved. This survives a redesign, and comes back if the site ever has to "
+                "be learned again."
             ),
         }
 

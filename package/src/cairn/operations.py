@@ -26,8 +26,10 @@ from .store import CairnStore
 
 Action = Literal["goto", "click", "fill", "select", "press", "wait"]
 
-# How long to wait for a download event that was triggered by the click just made.
-DOWNLOAD_GRACE_MS = 400
+# A download event arrives slightly after the click returns. Poll for it rather than
+# guessing one fixed delay: too short is flaky, too long makes every other step slow.
+DOWNLOAD_GRACE_MS = 2000
+DOWNLOAD_POLL_MS = 50
 
 
 @dataclass
@@ -216,10 +218,11 @@ def check_postcondition(browser: Browser, expected: Postcondition) -> bool:
     if expected.kind == "element_present":
         return browser.page.locator(expected.value).count() > 0
     if expected.kind == "download":
-        # A download fires slightly after the click returns, so give it one short
-        # grace period rather than making every other step pay for a fixed wait.
-        if browser.last_download is None:
-            browser.page.wait_for_timeout(DOWNLOAD_GRACE_MS)
+        # Wait only as long as it actually takes. Returns the moment the file arrives.
+        waited = 0
+        while browser.last_download is None and waited < DOWNLOAD_GRACE_MS:
+            browser.page.wait_for_timeout(DOWNLOAD_POLL_MS)
+            waited += DOWNLOAD_POLL_MS
         browser.flush_downloads()
         return browser.last_download is not None
     return False

@@ -82,6 +82,13 @@ class ReplayResult:
     """Files this run actually wrote to disk. A "download the invoice" task is not done
     until there is a real file, so replay reports paths rather than just filenames."""
 
+    stale: bool = False
+    """The trail is past repairing — the site was rebuilt, not tweaked."""
+
+    site_facts: list[str] = field(default_factory=list)
+    """What is still known about the site after a stale trail is thrown away. This is why
+    relearning is cheaper than a first visit."""
+
     @property
     def needs_repair(self) -> bool:
         return self.repair is not None
@@ -118,6 +125,13 @@ class Executor:
         playbook = self._load(domain)
         started = time.perf_counter()
         self.browser.saved_files.clear()
+        self.browser.last_download = None
+        self.browser.last_download_path = None
+
+        # A trail that is mostly broken is not worth repairing one step at a time.
+        if playbook.is_stale:
+            return self._retire(playbook, started)
+
         self.events.emit(RunStarted(domain=domain, task=playbook.task, mode="warm"))
 
         metrics = RunMetrics(
@@ -157,6 +171,12 @@ class Executor:
                     url=request.url,
                 )
             )
+            # That step's locators just took a miss. If that tipped the whole trail past
+            # half broken, stop asking for repairs and relearn instead.
+            if playbook.is_stale:
+                self.store.save_playbook(playbook)
+                return self._retire(playbook, started)
+
             self._finish(playbook, metrics, started, succeeded=False)
             return ReplayResult(
                 ok=False,
@@ -180,6 +200,12 @@ class Executor:
 
     def _replay_step(self, step: Step, *, start_url: str | None) -> _StepOutcome:
         began = time.perf_counter()
+
+        # Forget any earlier download before acting. Without this a "did it download?"
+        # check could be satisfied by a file fetched minutes ago in the same browser, and
+        # the step would report success having downloaded nothing.
+        self.browser.last_download = None
+        self.browser.last_download_path = None
 
         if step.action == "goto":
             destination = start_url if (start_url and step.index == 1) else step.value
@@ -232,6 +258,64 @@ class Executor:
         elif step.action == "press":
             self.browser.press(target, step.value or "Enter")
 
+    def _retire(self, playbook: Playbook, started: float) -> ReplayResult:
+        """Throw the trail away, keep what is known about the site, and say so.
+
+        This is the plan's rule: over half the steps broken means the site was rebuilt,
+        not adjusted. Repairing step by step from there is slower than walking it again,
+        and each repair would be built on a trail that is mostly wrong anyway.
+        """
+        broken = sum(1 for step in playbook.steps if step.health < 0.5)
+        self.store.retire_playbook(playbook.domain)
+        self.events.emit(
+            MemoryWrite(
+                category="playbook",
+                name=playbook.domain,
+                detail=f"retired as stale ({broken} of {len(playbook.steps)} steps broken)",
+            )
+        )
+
+        knowledge = self.store.load_site_knowledge(playbook.domain)
+        self.events.emit(
+            MemoryRead(
+                category="site_knowledge",
+                name=playbook.domain,
+                found=knowledge is not None,
+            )
+        )
+
+        metrics = RunMetrics(
+            domain=playbook.domain,
+            task=playbook.task,
+            mode="warm",
+            steps_total=len(playbook.steps),
+            tool_calls=1,
+            model_calls=0,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+        self.store.journal_run(metrics)
+        self.events.emit(
+            RunFinished(
+                domain=playbook.domain,
+                succeeded=False,
+                duration_ms=metrics.duration_ms,
+                steps_replayed=0,
+                steps_repaired=0,
+                model_calls=0,
+            )
+        )
+
+        return ReplayResult(
+            ok=False,
+            metrics=metrics,
+            stale=True,
+            reason=(
+                f"{broken} of {len(playbook.steps)} steps no longer match this site. "
+                f"It was rebuilt, not tweaked, so the trail has been retired."
+            ),
+            site_facts=knowledge.summary() if knowledge else [],
+        )
+
     # -------------------------------------------------------------- repair
 
     def _repair_request(self, playbook: Playbook, step: Step, tried: list[str]) -> RepairRequest:
@@ -257,6 +341,10 @@ class Executor:
         playbook = self._load(domain)
         step = next(s for s in playbook.steps if s.index == step_index)
         before = step.ranked_locators()[0].value if step.locators else "(nothing)"
+
+        # Drop the routes that just failed and had nothing to show for themselves.
+        # A locator with a real track record survives one miss and stays as a fallback.
+        step.locators = [existing for existing in step.locators if not existing.is_dead]
 
         locator.record_hit()
         step.locators.insert(0, locator)

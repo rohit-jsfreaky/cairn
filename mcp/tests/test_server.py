@@ -186,6 +186,73 @@ class TestTheGateThroughMCP:
         assert "nothing was remembered" in result["message"]
 
 
+class TestSiteFacts:
+    """Facts that outlive a redesign, written by the AI and handed back when it matters."""
+
+    def test_a_fact_is_saved_and_read_back(self, mcp_server, demo_server):
+        saved = call(
+            mcp_server,
+            "cairn_note",
+            site=demo_server,
+            fact="locks you out after five wrong passwords",
+        )
+
+        assert saved["ok"] is True
+        assert "locks you out after five wrong passwords" in saved["known_facts"]
+
+    def test_facts_add_up_across_calls(self, mcp_server, demo_server):
+        call(mcp_server, "cairn_note", site=demo_server, fact="the export takes two minutes")
+        second = call(
+            mcp_server,
+            "cairn_note",
+            site=demo_server,
+            needs_2fa=True,
+            account="finance@acme.com",
+        )
+
+        assert len(second["known_facts"]) >= 3, "nothing may overwrite what came before"
+
+    def test_calling_it_with_nothing_says_so(self, mcp_server, demo_server):
+        result = call(mcp_server, "cairn_note", site=demo_server)
+
+        assert result["ok"] is False
+        assert "at least one of" in result["error"]
+
+    def test_facts_come_back_when_the_site_is_unknown(self, mcp_server, demo_server):
+        """The point of writing them: the next AI to explore this site starts informed."""
+        call(mcp_server, "cairn_note", site=demo_server, needs_login=True)
+
+        result = call(mcp_server, "cairn_run", site=demo_server)
+
+        assert result["known"] is False
+        assert any("login" in fact for fact in result["site_facts"])
+        assert "site_facts" in result["next"]
+
+    def test_an_unknown_site_with_no_facts_is_told_to_write_some(
+        self, mcp_server, demo_server
+    ):
+        result = call(mcp_server, "cairn_run", site=demo_server)
+
+        assert result["site_facts"] == []
+        assert "cairn_note" in result["next"]
+
+    def test_show_includes_the_facts(self, mcp_server, demo_server):
+        teach_the_site(mcp_server, demo_server)
+        call(mcp_server, "cairn_note", site=demo_server, fact="invoices appear after the 3rd")
+
+        shown = call(mcp_server, "cairn_show", site=demo_server)
+
+        assert "invoices appear after the 3rd" in shown["site_facts"]
+
+    def test_forgetting_a_site_takes_the_facts_with_it(self, mcp_server, demo_server):
+        teach_the_site(mcp_server, demo_server)
+        call(mcp_server, "cairn_note", site=demo_server, needs_login=True)
+
+        call(mcp_server, "cairn_forget", site=demo_server)
+
+        assert call(mcp_server, "cairn_run", site=demo_server)["site_facts"] == []
+
+
 class TestToolDescriptions:
     """The descriptions ARE the product here — they are all the host AI gets to choose from.
 
@@ -236,6 +303,15 @@ class TestToolDescriptions:
 
         assert "not known" in tools["cairn_open"]
         assert "never needs exploring again" in tools["cairn_save"]
+
+    def test_cairn_note_says_when_to_call_it(self, mcp_server):
+        import asyncio
+
+        tools = {t.name: t.description or "" for t in asyncio.run(mcp_server.list_tools())}
+        note = tools["cairn_note"]
+
+        assert "not a step" in note, "it must be clear this is for facts, not actions"
+        assert "ADDS" in note, "the AI has to know it can call this many times"
 
     def test_every_tool_has_a_description(self, mcp_server):
         import asyncio

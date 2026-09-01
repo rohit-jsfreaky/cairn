@@ -62,6 +62,10 @@ def mcp_server(tmp_path):
     """A server with its own memory database, torn down properly after each test."""
     from cairn_mcp.server import build_server
 
-    server = build_server(db_path=str(tmp_path / "memory.db"), headless=True)
+    server = build_server(
+        db_path=str(tmp_path / "memory.db"),
+        headless=True,
+        downloads=str(tmp_path / "downloads"),
+    )
     yield server
     server.cairn_tools.close()

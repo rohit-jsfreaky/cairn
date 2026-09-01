@@ -120,6 +120,25 @@ class CairnStore:
         """COLD read. Used by the CLI and the dashboard to show memory working."""
         return self._memory.read_events(limit=limit)
 
+    def retire_playbook(self, domain: str) -> bool:
+        """Archive only the trail, keeping what we know about the site.
+
+        Used when a playbook goes stale: the steps are worthless because the site was
+        rebuilt, but "needs a login, sends a code to your phone, use the finance account"
+        is all still true. This is what makes relearning cheaper than a first visit.
+        """
+        try:
+            self._memory.archive_entity(PLAYBOOK, domain, reason="stale, site was rebuilt")
+        except NotFoundError:
+            return False
+
+        self._memory.write_event(
+            evaluated=[f"most of the trail for {domain} no longer matches the site"],
+            acted=[f"retired the trail for {domain}, kept what is known about the site"],
+            extra={"kind": "retired", "domain": domain},
+        )
+        return True
+
     # ------------------------------------------------------- the deletion test
 
     def forget_site(self, domain: str) -> bool:

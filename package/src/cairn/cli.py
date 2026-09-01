@@ -66,6 +66,8 @@ def render(event: Event) -> None:
         print(
             f"\n  {state} in {data['duration_ms']}ms  ·  "
             f"{data['steps_replayed']} steps from memory  ·  "
+            f"{data['steps_repaired']} repaired  ·  "
+            f"1 tool call  ·  "
             f"{data['model_calls']} model calls\n"
         )
     elif kind == "forgotten":
@@ -88,6 +90,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     emitter.subscribe(render)
     store = CairnStore(db_path=args.db)
 
+    # One trail per site, so a task given here is a check rather than a chooser.
+    if args.task:
+        remembered = store.load_playbook(domain)
+        if remembered is not None and remembered.task.lower() != args.task.lower():
+            print()
+            print(f'  note: this site is remembered for "{remembered.task}"')
+            print(f'        you asked for "{args.task}" — running the remembered one')
+            print()
+
     browser = Browser(headless=not args.headed)
     try:
         browser.start()
@@ -100,6 +111,15 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     for saved in result.saved_files:
         print(f"  {TICK} saved  {saved}")
+
+    if result.stale:
+        print()
+        print(f"  {CROSS} {result.reason}")
+        for fact in result.site_facts:
+            print(f"    still known: {fact}")
+        print("    walk it once more and it will be fast again.")
+        print()
+        return 2
 
     if result.needs_repair and result.repair is not None:
         print("  hand this to your AI:\n")
@@ -185,6 +205,12 @@ def build_parser() -> argparse.ArgumentParser:
     subs = parser.add_subparsers(dest="command", required=True)
 
     run = subs.add_parser("run", help="replay a remembered trail (no model calls)")
+    run.add_argument(
+        "task",
+        nargs="?",
+        default=None,
+        help='what you want done, e.g. "download this month\'s invoice"',
+    )
     run.add_argument("--site", required=True, help="domain or full url")
     run.add_argument("--url", default=None, help="override where the first step goes")
     run.add_argument("--headed", action="store_true", help="watch it happen")

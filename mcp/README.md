@@ -79,6 +79,20 @@ command = "/absolute/path/to/cairn/.venv/Scripts/cairn-mcp.exe"
 args = []
 ```
 
+### Other agents
+
+MCP is a shared standard, so anything that speaks it can use Cairn with install
+instructions only — never another build. Two worth naming:
+
+- **OpenClaw** (388k stars) lists "Connect MCP servers" in its docs, so this server plugs
+  straight in. Note that OpenClaw users already have browser tools, so the reason to add
+  Cairn there is not "here is a browser" — it is "your browser stops re-learning the same
+  site every time".
+- **Hermes Agent** (Nous Research) is officially supported by Sibyl and runs unattended on
+  a cron schedule. That is the strongest case for deterministic replay: at 3am nobody is
+  watching, so an AI improvising a click is a liability. **Open question:** whether Hermes
+  loads MCP servers directly or needs a small plugin adapter. Not yet checked.
+
 ### Once it is published
 
 ```bash

@@ -82,6 +82,43 @@ class TestColdRun:
         assert session.tool_calls >= 8
 
 
+class TestDownloadsAreRealEachTime:
+    """A replay must download the file again, not coast on an earlier one.
+
+    Found by a test that only failed when the whole suite ran: the executor never cleared
+    the last download, so a "did it download?" check could be satisfied by a file fetched
+    minutes earlier in the same browser. The step reported success having downloaded
+    nothing, and `saved_files` came back empty.
+    """
+
+    def test_each_replay_writes_the_file_again(
+        self, learned, store: CairnStore, browser: Browser, demo_server: str
+    ):
+        from pathlib import Path
+
+        domain = domain_of(demo_server)
+        first = Executor(store, browser).run(domain, start_url=f"{demo_server}/")
+        assert first.saved_files, "the first replay should save a file"
+
+        second = Executor(store, browser).run(domain, start_url=f"{demo_server}/")
+
+        assert second.saved_files, "the second replay must not coast on the first download"
+        assert Path(second.saved_files[0]).is_file()
+
+    def test_a_run_starts_with_no_download_remembered(
+        self, learned, store: CairnStore, browser: Browser, demo_server: str
+    ):
+        Executor(store, browser).run(domain_of(demo_server), start_url=f"{demo_server}/")
+        assert browser.last_download is not None
+
+        # A run against a page with no download must not still report the old one.
+        browser.goto(f"{demo_server}/invoices")
+        assert browser.last_download is not None, "still set until the next run clears it"
+
+        Executor(store, browser).run(domain_of(demo_server), start_url=f"{demo_server}/")
+        assert len(browser.saved_files) == 1, "saved_files is per run, not cumulative"
+
+
 class TestWarmRun:
     """Finish line 2: replay, deterministically, with no model involved."""
 

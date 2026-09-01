@@ -4,12 +4,22 @@
 
 ## Current state — 2026-09-01
 
-**PHASE 1 IS BUILT. 72 tests pass, ruff clean.** Three of the four finish-line criteria
-pass outright. The fourth (`>=5x faster`) needs re-reading — see the honest note below,
-it is the most important thing on this page.
+**PHASE 1 IS BUILT. 89 tests pass, ruff clean.**
+
+I marked this phase done once before while three bullets of step 1e and 1f were missing.
+That was wrong, and the correction is recorded here rather than quietly patched:
+
+| was missing | plan step | state |
+|---|---|---|
+| stale rule: >50% broken -> relearn, keep site facts | 1e | **built** |
+| archive/drop dead locators on repair | 1e | **built** (dropped, Rohit's call) |
+| anything ever WRITING site facts | **no step existed** | **built** — `cairn_note` |
+| `cairn run "<task>" --site <url>` took no task | 1f | **built** |
+| metrics line missing repairs + tool calls | 1f | **built** |
+| a real captcha-free site | 1g | **still open, needs Rohit** |
 
 ```
-pytest        72 passed
+pytest        89 passed
 ruff check    All checks passed
 ```
 
@@ -74,6 +84,15 @@ Rohit needs to decide whether Phase 1 counts as closed on that basis. Flagged, n
   redesign therefore costs literally nothing — not even a wasted attempt. Cairn never finds
   out the CSS id died, and should not: probing locators it does not need would spend time
   learning something it has no use for.
+- **Site facts are written by the host AI, not guessed by code.** An earlier plan was to
+  infer them from the trace (a password field means "needs a login"). That would have
+  covered maybe a fifth of what matters and quietly missed the rest: "locks you out after
+  five wrong passwords", "the invoice only appears after the 3rd", "use the finance login".
+  Those never appear as a step. Rohit rejected the inference version as a partial fix, and
+  he was right — `cairn_note` is the real feature.
+- **Retiring is not forgetting.** A stale trail is archived while the site facts are kept
+  and handed back, which is what makes relearning cheaper than a first visit. `forget`
+  still wipes both — that is the gate.
 - **Structural locators match the href PATH, not the whole href.** Real sites hang session
   ids and tracking parameters off links. Found by a failing test, not by guessing.
 - **`forget_site` archives, never deletes.**
@@ -97,8 +116,9 @@ Rohit needs to decide whether Phase 1 counts as closed on that basis. Flagged, n
 
 ## Next action
 
-Phase 2 — `mcp/`. Expose look / act / verify / run / forget as MCP tools so a real Claude
-Code drives the cold path. That is also what finally produces an honest speed number.
+**1g — one real, captcha-free website.** Everything is still proven against our own demo
+site, which has clean HTML, stable ids, no JavaScript rendering and no cookie banner. That
+is the biggest remaining gap between "demo" and "product".
 
 ## Known warnings
 

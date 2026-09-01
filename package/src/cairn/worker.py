@@ -18,6 +18,7 @@ import queue
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future
+from pathlib import Path
 from typing import Any, TypeVar
 
 from .browser import Browser
@@ -30,8 +31,9 @@ _STOP = object()
 class BrowserWorker:
     """A browser that lives on its own thread, driven by posting callables to it."""
 
-    def __init__(self, *, headless: bool = True):
+    def __init__(self, *, headless: bool = True, downloads: str | None = None):
         self._headless = headless
+        self._downloads = downloads
         self._jobs: queue.Queue[Any] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
@@ -76,7 +78,10 @@ class BrowserWorker:
 
     def _serve(self) -> None:
         try:
-            self.browser = Browser(headless=self._headless).start()
+            self.browser = Browser(
+                headless=self._headless,
+                downloads=Path(self._downloads) if self._downloads else None,
+            ).start()
         except BaseException as failure:  # noqa: BLE001 - surfaced to start()
             self._failure = failure
             self._ready.set()
