@@ -228,9 +228,7 @@ class TestSiteFacts:
         assert any("login" in fact for fact in result["site_facts"])
         assert "site_facts" in result["next"]
 
-    def test_an_unknown_site_with_no_facts_is_told_to_write_some(
-        self, mcp_server, demo_server
-    ):
+    def test_an_unknown_site_with_no_facts_is_told_to_write_some(self, mcp_server, demo_server):
         result = call(mcp_server, "cairn_run", site=demo_server)
 
         assert result["site_facts"] == []
@@ -251,6 +249,44 @@ class TestSiteFacts:
         call(mcp_server, "cairn_forget", site=demo_server)
 
         assert call(mcp_server, "cairn_run", site=demo_server)["site_facts"] == []
+
+
+class TestSigningIn:
+    """Some logins cannot be automated and should not be — Google, SSO, one-time codes.
+
+    The answer is not to get cleverer at typing passwords. It is to open a real window,
+    let the person sign in themselves, and keep the session afterwards.
+    """
+
+    def test_login_done_without_login_first_says_so(self, mcp_server, demo_server):
+        result = call(mcp_server, "cairn_login_done", site=demo_server)
+
+        assert result["ok"] is False
+        assert "call cairn_login first" in result["error"]
+
+    def test_cairn_login_tells_the_ai_to_hand_over_to_the_user(self, mcp_server):
+        import asyncio
+
+        tools = {t.name: t.description or "" for t in asyncio.run(mcp_server.list_tools())}
+        login = tools["cairn_login"]
+
+        assert "USER" in login, "it must be clear the person signs in, not the AI"
+        assert "Google" in login
+        assert "never guess a password" in login
+
+    def test_login_done_makes_clear_nothing_secret_was_kept(self, mcp_server):
+        import asyncio
+
+        tools = {t.name: t.description or "" for t in asyncio.run(mcp_server.list_tools())}
+
+        assert "no password, no code" in tools["cairn_login_done"]
+
+    def test_the_instructions_forbid_automating_an_sso_button(self, mcp_server):
+        instructions = mcp_server.instructions or ""
+
+        assert "never guess" in instructions
+        assert "cairn_login" in instructions
+        assert "only ever have to do that once per site" in instructions
 
 
 class TestToolDescriptions:

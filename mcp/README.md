@@ -15,6 +15,8 @@ instructions, never another build.
 | `cairn_sites` | what Cairn already knows how to do |
 | `cairn_show` | the trail for one site, step by step |
 | `cairn_forget` | make Cairn forget a site |
+| `cairn_login` `cairn_login_done` | you sign in yourself; Cairn keeps the session |
+| `cairn_note` | remember a fact about a site that is not a step |
 | `cairn_open` `cairn_look` `cairn_act` `cairn_save` | only for a site Cairn has never seen |
 
 The split is the whole point. Exploring a site is many calls and a lot of reading. It
@@ -155,6 +157,10 @@ Then, in your editor:
 - **No API key. No account.** Nothing here calls a model, and Sibyl Memory works locally
   with no credentials.
 - Memory is a single file at `~/.sibyl-memory/memory.db`. Nothing is uploaded.
-- The browser runs headless and gets a **fresh context every session** — no reused cookies,
-  so "it still remembers" is never quietly propped up by a logged-in profile.
+- The browser runs headless and keeps **one shared profile** at `~/.cairn/browser-profile`,
+  so you stay signed in between runs. Being signed in is not the same as remembering: the
+  profile holds who you are, Sibyl memory holds what Cairn knows. Wipe the memory and Cairn
+  is still logged in but has to explore the site again from scratch.
+- For a login that cannot be automated (Google, SSO, a one-time code), use `cairn_login`,
+  sign in yourself in the window that opens, then `cairn_login_done`. Once per site.
 - Logs go to stderr only. stdout belongs to the MCP transport.

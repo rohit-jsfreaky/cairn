@@ -3,6 +3,7 @@
 Five commands, and one of them is the point of the whole project:
 
     cairn run    --site <url>        replay a remembered trail, no model involved
+    cairn login  --site <url>        open a window and sign in yourself
     cairn sites                      what Cairn knows
     cairn show   <domain>            the trail, step by step
     cairn forget --site <domain>     THE DELETION GATE
@@ -23,7 +24,7 @@ import json
 import sys
 from urllib.parse import urlparse
 
-from .browser import Browser, domain_of
+from .browser import DEFAULT_PROFILE, Browser, domain_of
 from .events import Emitter, Event
 from .executor import Executor, NoTrailError
 from .store import CairnStore
@@ -99,7 +100,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f'        you asked for "{args.task}" — running the remembered one')
             print()
 
-    browser = Browser(headless=not args.headed)
+    browser = Browser(headless=not args.headed, profile=DEFAULT_PROFILE)
     try:
         browser.start()
         result = Executor(store, browser, emitter=emitter).run(domain, start_url=start_url)
@@ -111,6 +112,13 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     for saved in result.saved_files:
         print(f"  {TICK} saved  {saved}")
+
+    if result.needs_login:
+        print()
+        print(f"  {CROSS} {result.reason}")
+        print(f"    sign in again with:  cairn login --site {args.site}")
+        print()
+        return 3
 
     if result.stale:
         print()
@@ -127,6 +135,37 @@ def cmd_run(args: argparse.Namespace) -> int:
         print()
         return 1
     return 0 if result.ok else 1
+
+
+def cmd_login(args: argparse.Namespace) -> int:
+    """Open a real window so a person can sign in themselves.
+
+    Some logins cannot be automated and should not be: a Google button, a company SSO
+    page, a code sent to a phone. Cairn opens the browser, waits, and keeps the session.
+    It never sees the password.
+    """
+    target = args.site if "://" in args.site else f"https://{args.site}"
+
+    print()
+    print(f"  opening {target}")
+    print("  sign in however the site asks — password, Google, a code on your phone.")
+
+    browser = Browser(headless=False, profile=DEFAULT_PROFILE)
+    try:
+        browser.start()
+        browser.goto(target)
+        print()
+        input("  press Enter here once you are signed in... ")
+        where = browser.page.url
+    finally:
+        browser.stop()
+
+    print()
+    print(f"  {TICK} signed in. session kept for {domain_of(where)}")
+    print("    Cairn saved no password and no code, only the session.")
+    print(f"    now run:  cairn run --site {args.site}")
+    print()
+    return 0
 
 
 def cmd_sites(args: argparse.Namespace) -> int:
@@ -215,6 +254,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--url", default=None, help="override where the first step goes")
     run.add_argument("--headed", action="store_true", help="watch it happen")
     run.set_defaults(func=cmd_run)
+
+    login = subs.add_parser(
+        "login", help="open a window and sign in yourself (Google, SSO, one-time codes)"
+    )
+    login.add_argument("--site", required=True, help="domain or full url")
+    login.set_defaults(func=cmd_login)
 
     sites = subs.add_parser("sites", help="list every site Cairn remembers")
     sites.set_defaults(func=cmd_sites)

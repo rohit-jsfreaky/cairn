@@ -18,8 +18,9 @@ import pytest
 import uvicorn
 from tests.demo_site.app import app
 
-from cairn.browser import Browser
+from cairn.browser import Browser, domain_of
 from cairn.operations import Session
+from cairn.secrets import env_var_name
 from cairn.store import CairnStore
 
 TASK = "download this month's invoice"
@@ -50,6 +51,17 @@ def demo_server() -> Iterator[str]:
 
     server.should_exit = True
     thread.join(timeout=5)
+
+
+@pytest.fixture(autouse=True)
+def demo_password(demo_server, monkeypatch):
+    """Give this machine the demo site's password.
+
+    Cairn deliberately never stores passwords, so a replay cannot supply one from memory.
+    This is the same thing a real user does with an environment variable — and it means
+    the suite proves the secret path works rather than skipping past it.
+    """
+    monkeypatch.setenv(env_var_name(domain_of(demo_server), "password"), "hunter2")
 
 
 @pytest.fixture

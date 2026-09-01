@@ -22,7 +22,7 @@ from __future__ import annotations
 import sys
 from typing import Any
 
-from cairn.browser import domain_of
+from cairn.browser import DEFAULT_PROFILE, domain_of
 from cairn.executor import Executor, NoTrailError
 from cairn.models import Locator, SiteKnowledge
 from cairn.operations import ActionFailed, Session
@@ -60,10 +60,15 @@ class CairnTools:
         db_path: str | None = None,
         headless: bool = True,
         downloads: str | None = None,
+        profile: str | None = None,
     ):
         self.store = CairnStore(db_path=db_path)
-        self.worker = BrowserWorker(headless=headless, downloads=downloads)
+        self.profile = profile if profile is not None else str(DEFAULT_PROFILE)
+        self.downloads = downloads
+        self.headless = headless
+        self.worker = BrowserWorker(headless=headless, downloads=downloads, profile=self.profile)
         self._session: Session | None = None
+        self._login_worker: BrowserWorker | None = None
 
     def session(self) -> Session:
         """The cold-path session, started the first time it is needed."""
@@ -75,7 +80,37 @@ class CairnTools:
     def reset_session(self) -> None:
         self._session = None
 
+    def open_login_window(self, url: str) -> None:
+        """Show a real browser window so a person can sign in themselves.
+
+        Chrome allows one process per profile, so the working browser has to let go of it
+        first. It starts again by itself on the next call.
+        """
+        self.worker.stop()
+        self._session = None
+        self._login_worker = BrowserWorker(
+            headless=False, downloads=self.downloads, profile=self.profile
+        )
+        self._login_worker.start()
+        self._login_worker.submit(lambda browser: browser.goto(url))
+
+    def finish_login(self) -> str:
+        """Close the sign-in window. The session is already saved in the profile."""
+        if self._login_worker is None:
+            return ""
+        where = self._login_worker.submit(lambda browser: browser.page.url)
+        self._login_worker.stop()
+        self._login_worker = None
+        return where
+
+    @property
+    def signing_in(self) -> bool:
+        return self._login_worker is not None
+
     def close(self) -> None:
+        if self._login_worker is not None:
+            self._login_worker.stop()
+            self._login_worker = None
         self.worker.stop()
         self._session = None
 
@@ -85,9 +120,10 @@ def build_server(
     db_path: str | None = None,
     headless: bool = True,
     downloads: str | None = None,
+    profile: str | None = None,
 ) -> FastMCP:
     """Wire the tools. Kept in a function so tests can build a server without running it."""
-    tools = CairnTools(db_path=db_path, headless=headless, downloads=downloads)
+    tools = CairnTools(db_path=db_path, headless=headless, downloads=downloads, profile=profile)
 
     server = FastMCP(
         "cairn",
@@ -103,7 +139,11 @@ def build_server(
             "has, the entire task finishes in that one call with no page reading and no "
             "reasoning. If it has not, the result says so and tells you what to do next: "
             "explore with cairn_open, cairn_look and cairn_act, then cairn_save. That "
-            "teaches Cairn the site so it is never explored again."
+            "teaches Cairn the site so it is never explored again.\n\n"
+            "If a site asks to sign in and you do not have the password, never guess and "
+            "never automate a Google or SSO button. Call cairn_login, ask the user to sign "
+            "in in the window that opens, then call cairn_login_done. Cairn keeps one "
+            "browser profile, so they only ever have to do that once per site."
         ),
     )
 
@@ -166,6 +206,21 @@ def build_server(
             }
         except Exception as failure:  # noqa: BLE001 - reported, not raised at the client
             return err(failure)
+
+        if result.needs_login:
+            return {
+                "ok": False,
+                "known": True,
+                "needs_login": True,
+                "site": key,
+                "message": result.reason,
+                "next": (
+                    "Do not try to repair this and do not guess a password. Ask the user to "
+                    "sign in: call cairn_login, tell them to sign in in the window that "
+                    "opens, and when they say they are done call cairn_login_done. Then "
+                    "call cairn_run again."
+                ),
+            }
 
         if result.stale:
             return {
@@ -371,6 +426,78 @@ def build_server(
             "message": (
                 "Saved. This survives a redesign, and comes back if the site ever has to "
                 "be learned again."
+            ),
+        }
+
+    @server.tool()
+    def cairn_login(site: str) -> dict[str, Any]:
+        """Open a real browser window so the USER can sign in to a site themselves.
+
+        Use this when a site needs a login that you cannot or should not do: a "Sign in
+        with Google" button, a company SSO page, or anything that sends a one-time code.
+        Never try to type those yourself and never guess a password.
+
+        A visible Chrome window opens on that site. Tell the user to sign in there, in
+        their own time. When they say they are done, call cairn_login_done.
+
+        Cairn keeps one browser profile, so after this the user stays signed in to this
+        site — and every other site they have signed in to — until it expires.
+
+        Args:
+            site: The site to open, as a full URL where possible.
+        """
+        target = site if "://" in site else f"https://{site}"
+        try:
+            tools.open_login_window(target)
+        except Exception as failure:  # noqa: BLE001
+            return err(failure)
+
+        return {
+            "ok": True,
+            "site": domain_of(target),
+            "opened": target,
+            "next": (
+                "A browser window is now open. Tell the user: sign in there however the "
+                "site asks — password, Google, a code on your phone — and say when you are "
+                "done. Then call cairn_login_done. Do not call any other Cairn tool until "
+                "then, because the sign-in window is holding the browser."
+            ),
+        }
+
+    @server.tool()
+    def cairn_login_done(site: str) -> dict[str, Any]:
+        """Close the sign-in window once the user says they are signed in.
+
+        Cairn saves nothing about how they signed in — no password, no code. It simply
+        keeps the browser session, the same way their own browser does, so later runs
+        start already signed in.
+
+        Args:
+            site: The same site passed to cairn_login.
+        """
+        key = domain_of(site) if "://" in site else site
+        if not tools.signing_in:
+            return err("no sign-in window is open — call cairn_login first")
+
+        try:
+            ended_at = tools.finish_login()
+            knowledge = tools.store.load_site_knowledge(key) or SiteKnowledge(domain=key)
+            knowledge.merge(
+                fact="signed in by hand; Cairn keeps the session in its browser profile",
+                needs_login=True,
+            )
+            tools.store.save_site_knowledge(knowledge)
+        except Exception as failure:  # noqa: BLE001
+            return err(failure)
+
+        return {
+            "ok": True,
+            "site": key,
+            "ended_at": ended_at,
+            "known_facts": knowledge.summary(),
+            "next": (
+                "Signed in and the window is closed. Call cairn_run again — and if the "
+                "site is still unknown, explore it now and call cairn_save."
             ),
         }
 

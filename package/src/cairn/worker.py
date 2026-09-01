@@ -31,9 +31,16 @@ _STOP = object()
 class BrowserWorker:
     """A browser that lives on its own thread, driven by posting callables to it."""
 
-    def __init__(self, *, headless: bool = True, downloads: str | None = None):
+    def __init__(
+        self,
+        *,
+        headless: bool = True,
+        downloads: str | None = None,
+        profile: str | None = None,
+    ):
         self._headless = headless
         self._downloads = downloads
+        self._profile = profile
         self._jobs: queue.Queue[Any] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
@@ -81,6 +88,7 @@ class BrowserWorker:
             self.browser = Browser(
                 headless=self._headless,
                 downloads=Path(self._downloads) if self._downloads else None,
+                profile=Path(self._profile) if self._profile else None,
             ).start()
         except BaseException as failure:  # noqa: BLE001 - surfaced to start()
             self._failure = failure

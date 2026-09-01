@@ -67,6 +67,63 @@ website; it is an **executable, self-verifying, self-repairing procedure** that 
 completely fresh process can pick up and run with no model involved. Delete it and Cairn has
 nothing to replay — it degrades to a slow browser tool.
 
+## Signing in
+
+Some logins cannot be automated, and should not be. A "Sign in with Google" button, a
+company SSO page, a code sent to your phone — attempting those with a script gets the
+account challenged or locked, and rightly so.
+
+So Cairn does what a person does: **you sign in once, by hand, in a real window.**
+
+```bash
+cairn login --site eu.posthog.com     # a window opens, you sign in, press Enter
+cairn run --site eu.posthog.com       # signed in from here on
+```
+
+From your AI it is `cairn_login`, then `cairn_login_done` once you say you are in.
+
+Cairn keeps **one shared browser profile** at `~/.cairn/browser-profile`, so signing in to
+one site never signs you out of another, and you only do it once per site. It stores no
+password and no code — only the session, exactly as your own browser does.
+
+When a session expires, replay says so plainly ("the trail is fine, the session ran out")
+instead of trying to repair its way past a login page.
+
+### Being signed in is not the same as remembering
+
+This matters for the deletion test, so it is worth being exact:
+
+| | where it lives | what the gate does |
+|---|---|---|
+| **who you are** — cookies, session | your machine, `~/.cairn/browser-profile` | untouched |
+| **what Cairn knows** — the trail | Sibyl memory | **wiped** |
+
+Delete the memory and Cairn is still signed in, but it has no idea what to click and has
+to explore the site from scratch. The gate still holds.
+
+Sites with an ordinary email-and-password form need none of this — Cairn signs in on every
+run by typing them, which is what the demo site does, so the demo shows a real login
+happening rather than assuming one.
+
+## Passwords are never remembered
+
+Cairn writes its trail to a file on disk. A password in that file is a password in a
+backup, a sync folder, and eventually a support ticket.
+
+So a step remembers **that** a password is typed, never which one:
+
+```json
+{ "intent": "type the password", "action": "fill", "value": null, "secret": "password" }
+```
+
+At replay time the value is read from the machine doing the run — an environment variable
+`CAIRN_SECRET_<SITE>_PASSWORD`, or `~/.cairn/secrets.json`. If it is not there, replay
+stops and says exactly what to set. It never guesses and never falls back to something
+stored earlier.
+
+`package/tests/test_secrets.py` searches the entire saved trail for the test password and
+fails if it appears anywhere.
+
 ## The deletion test
 
 The hackathon rules say the memory must be load-bearing: delete it, and the project must stop

@@ -27,6 +27,7 @@ def distill(trace: list[TraceEntry], *, domain: str, task: str) -> Playbook:
             intent=entry.intent,
             action=entry.action,
             value=entry.value,
+            secret=entry.secret,
             postcondition=postcondition_for(entry),
             locators=locators_for(entry),
         )

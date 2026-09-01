@@ -19,7 +19,7 @@ That was wrong, and the correction is recorded here rather than quietly patched:
 | a real captcha-free site | 1g | **still open, needs Rohit** |
 
 ```
-pytest        89 passed
+pytest        108 passed
 ruff check    All checks passed
 ```
 
@@ -84,6 +84,16 @@ Rohit needs to decide whether Phase 1 counts as closed on that basis. Flagged, n
   redesign therefore costs literally nothing — not even a wasted attempt. Cairn never finds
   out the CSS id died, and should not: probing locators it does not need would spend time
   learning something it has no use for.
+- **Passwords are never written to memory.** Found while preparing for a real site: the
+  trail was storing `"value": "hunter2"` in plain text, so pointing Cairn at a real login
+  would have put a real password into `~/.sibyl-memory/memory.db`. Now a step stores
+  `secret: "password"` with no value, and replay resolves it from an environment variable
+  or `~/.cairn/secrets.json`, failing loudly if it is missing. `look()` reports a password
+  box as `(filled)`, never its contents.
+- **`look()` returns field values and a bounded slice of page text.** It used to return
+  controls only, which meant Cairn could click but never read — no invoice amount, no
+  error message, and no way to see that a login was already filled in. Text is capped at
+  1200 characters, which is still a hundredth of a raw page.
 - **Site facts are written by the host AI, not guessed by code.** An earlier plan was to
   infer them from the trace (a password field means "needs a login"). That would have
   covered maybe a fifth of what matters and quietly missed the rest: "locks you out after

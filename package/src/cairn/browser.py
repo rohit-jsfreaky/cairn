@@ -1,15 +1,26 @@
 """The hands. Playwright, wrapped so the rest of Cairn never touches it directly.
 
-Two things here matter more than the rest:
+Three things here matter more than the rest:
 
-1. **Every session gets a brand new context.** No stored cookies, no reused profile. The
-   product claim is "close your editor, come back tomorrow, it still works", and that is
-   only honest if a fresh run is provably fresh. Reusing a logged-in profile would make
-   replay look better than it is.
-
-2. **A snapshot is a short list of controls, not the page HTML.** Handing a host AI 200 kB
+1. **A snapshot is a short list of controls, not the page HTML.** Handing a host AI 200 kB
    of markup is exactly the cost Cairn exists to remove. `snapshot()` returns the handful
    of things you can actually act on, with four different ways to find each one.
+
+2. **There are two browser modes, and the difference is deliberate.**
+
+   *Profile mode* (the default in real use) keeps one Chrome profile at
+   `~/.cairn/browser-profile`, so you stay signed in between runs exactly as you do in
+   your own browser. Some logins — Google, Microsoft, anything with a one-time code —
+   cannot be automated at all, and should not be: you sign in once by hand and the session
+   is kept.
+
+   *Clean mode* (`profile=None`) throws the browser away every time. Tests use it, and so
+   does any demo where the login itself must be shown happening rather than assumed.
+
+3. **Being signed in is not the same as remembering.** The profile holds who you are. Sibyl
+   memory holds what Cairn knows about a site. Delete the memory and Cairn is still logged
+   in, but has no idea what to click and has to explore again — the deletion test is
+   untouched by any of this.
 """
 
 from __future__ import annotations
@@ -29,6 +40,17 @@ from .models import Locator
 # like "download this month's invoice" is not done if the file only existed inside a
 # temporary browser profile that gets deleted when the context closes.
 DEFAULT_DOWNLOADS = Path.home() / ".cairn" / "downloads"
+
+# One shared Chrome profile for every site, so signing in to one does not sign you out of
+# another. Shared rather than per-site on purpose: Google and friends check that the
+# browser looks like the same browser each visit, and a throwaway profile gets challenged
+# every single time.
+DEFAULT_PROFILE = Path.home() / ".cairn" / "browser-profile"
+
+# A page that wants a password, or an address that reads like a sign-in, means the session
+# has run out. Used only after a step has already failed, so a login page we navigated to
+# on purpose is never mistaken for one.
+_SIGNED_OUT_HINTS = ("/login", "/signin", "/sign-in", "/sign_in", "/auth", "/sso", "/oauth")
 
 # Collects the controls worth remembering, with everything needed to build locators.
 # Runs in the page, so one round trip returns the whole snapshot.
@@ -99,6 +121,13 @@ _COLLECT_JS = """
   const out = [];
   document.querySelectorAll(selector).forEach((el, i) => {
     if (!visible(el)) return;
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const isSecret = type === 'password';
+    let value = null;
+    if ('value' in el && typeof el.value === 'string') {
+      // Never report what is typed in a password box, not even back to the caller.
+      value = isSecret ? (el.value ? '(filled)' : '') : el.value.slice(0, 120);
+    }
     out.push({
       ref: 'e' + (out.length + 1),
       role: roleOf(el),
@@ -107,6 +136,7 @@ _COLLECT_JS = """
       css: cssOf(el),
       href: el.getAttribute('href'),
       type: el.getAttribute('type'),
+      value: value,
     });
   });
   return out;
@@ -125,6 +155,10 @@ class Element:
     css: str
     href: str | None = None
     type: str | None = None
+    value: str | None = None
+    """What the field currently holds. A page can arrive with fields already filled, and
+    an AI that cannot see that will ask the user for something already on screen. Password
+    boxes report "(filled)" rather than their contents."""
 
     def locators(self) -> list[Locator]:
         """Four ways to find this element, most durable first.
@@ -144,13 +178,22 @@ class Element:
         return found
 
     def to_dict(self) -> dict[str, str | None]:
-        return {
+        described: dict[str, str | None] = {
             "ref": self.ref,
             "role": self.role,
             "name": self.name,
             "css": self.css,
             "href": self.href,
         }
+        if self.value:
+            described["value"] = self.value
+        return described
+
+
+# How much visible page text one look() may return. Enough to read a heading, an amount
+# or an error message; far too little to be a page dump. The whole point of the project is
+# not paying to push pages through a model.
+MAX_TEXT_CHARS = 1200
 
 
 @dataclass
@@ -160,6 +203,9 @@ class Snapshot:
     url: str
     title: str
     elements: list[Element] = field(default_factory=list)
+    text: str = ""
+    """A trimmed view of what the page says. Without this Cairn can click but never read,
+    so "check the balance" or "what does the error say" would be impossible."""
 
     @property
     def domain(self) -> str:
@@ -172,6 +218,7 @@ class Snapshot:
         return {
             "url": self.url,
             "title": self.title,
+            "text": self.text,
             "elements": [e.to_dict() for e in self.elements],
         }
 
@@ -194,12 +241,24 @@ def domain_of(url: str) -> str:
     return parsed.netloc or url
 
 
+class ProfileInUse(RuntimeError):
+    """Something else already has Cairn's browser profile open."""
+
+
 class Browser:
     """A single browsing session. Always a fresh context, never a reused profile."""
 
-    def __init__(self, *, headless: bool = True, downloads: Path | None = None):
+    def __init__(
+        self,
+        *,
+        headless: bool = True,
+        downloads: Path | None = None,
+        profile: Path | None = None,
+    ):
+        """`profile=None` means a clean browser every time. Pass a path to stay signed in."""
         self._headless = headless
         self._downloads = Path(downloads) if downloads is not None else DEFAULT_DOWNLOADS
+        self._profile = Path(profile) if profile is not None else None
         self._playwright = None
         self._browser = None
         self._context = None
@@ -213,10 +272,31 @@ class Browser:
 
     def start(self) -> Browser:
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=self._headless)
-        # A brand new context every time. This is the "fresh session" guarantee.
-        self._context = self._browser.new_context(accept_downloads=True)
-        self._page = self._context.new_page()
+
+        if self._profile is not None:
+            self._profile.mkdir(parents=True, exist_ok=True)
+            # Chrome allows one process per profile. A clear message beats a raw crash.
+            try:
+                self._context = self._playwright.chromium.launch_persistent_context(
+                    str(self._profile),
+                    headless=self._headless,
+                    accept_downloads=True,
+                )
+            except Exception as clash:
+                self._playwright.stop()
+                self._playwright = None
+                raise ProfileInUse(
+                    "Cairn's browser profile is already open in another window. Close the "
+                    "sign-in window (or the other Cairn run) and try again."
+                ) from clash
+            self._browser = None
+            pages = self._context.pages
+            self._page = pages[0] if pages else self._context.new_page()
+        else:
+            self._browser = self._playwright.chromium.launch(headless=self._headless)
+            self._context = self._browser.new_context(accept_downloads=True)
+            self._page = self._context.new_page()
+
         self._page.on("download", self._remember_download)
         return self
 
@@ -278,7 +358,25 @@ class Browser:
             url=self.page.url,
             title=self.page.title(),
             elements=[Element(**item) for item in raw],
+            text=self.readable_text(),
         )
+
+    def readable_text(self, limit: int = MAX_TEXT_CHARS) -> str:
+        """What the page says, tidied and cut short.
+
+        Blank lines collapsed, and cut at a line break rather than mid-word so the result
+        reads like text instead of a truncated blob.
+        """
+        newline = "\n"
+        lines = [line.strip() for line in self.text().splitlines()]
+        tidy = newline.join(line for line in lines if line)
+        if len(tidy) <= limit:
+            return tidy
+
+        cut = tidy[:limit]
+        edge = cut.rfind(newline)
+        trimmed = cut[:edge] if edge > limit // 2 else cut
+        return trimmed + newline + "…"
 
     def resolve(self, locator: Locator, *, timeout_ms: int = 1500) -> PWLocator | None:
         """Turn a stored locator back into something on the page, or None if it misses.
@@ -327,6 +425,20 @@ class Browser:
 
     def select(self, target: PWLocator, value: str) -> None:
         target.select_option(value)
+
+    def looks_signed_out(self) -> bool:
+        """Does this look like we were bounced back to a sign-in page?
+
+        Only ever asked after a step has already failed. A site we deliberately opened at
+        its login page must not be mistaken for an expired session.
+        """
+        address = self.page.url.lower()
+        if any(hint in address for hint in _SIGNED_OUT_HINTS):
+            return True
+        try:
+            return self.page.locator('input[type="password"]').count() > 0
+        except Exception:
+            return False
 
     def text(self) -> str:
         """Visible page text, used only for postcondition checks — never sent to a model."""

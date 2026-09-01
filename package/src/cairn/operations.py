@@ -40,6 +40,7 @@ class TraceEntry:
     action: Action
     value: str | None = None
     element: Element | None = None
+    secret: str | None = None
     url_before: str = ""
     url_after: str = ""
     text_gained: str = ""
@@ -109,11 +110,19 @@ class Session:
 
         element = self._perform(action, ref=ref, value=value)
 
+        # A password is remembered as "there is a password here", never as the password.
+        secret = secret_name(element) if action == "fill" else None
+
+        # The download event can arrive after the click has already returned, so catch
+        # any straggler before recording what happened.
+        self.browser.flush_downloads()
+
         text_after = self.browser.text()
         entry = TraceEntry(
             intent=intent,
             action=action,
-            value=value,
+            value=None if secret else value,
+            secret=secret,
             element=element,
             url_before=url_before,
             url_after=self.browser.page.url,
@@ -130,6 +139,13 @@ class Session:
             "navigated": entry.navigated,
             "download": entry.download,
             "saved_to": self.browser.last_download_path,
+            "secret": secret,
+            "note": (
+                f"This was a {secret} field, so Cairn did not remember what was typed. "
+                f"On a later run it will look the value up on this machine."
+                if secret
+                else None
+            ),
         }
 
     def _perform(self, action: Action, *, ref: str | None, value: str | None) -> Element | None:
@@ -201,6 +217,15 @@ class Session:
                 )
             )
         return playbook
+
+
+def secret_name(element: Element | None) -> str | None:
+    """Is this a field whose value must never be written down?"""
+    if element is None:
+        return None
+    if (element.type or "").lower() == "password":
+        return (element.name or "password").strip().lower().replace(" ", "_") or "password"
+    return None
 
 
 def check_postcondition(browser: Browser, expected: Postcondition) -> bool:

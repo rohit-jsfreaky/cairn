@@ -38,6 +38,8 @@ from .events import (
 )
 from .models import Locator, Playbook, RunMetrics, Step
 from .operations import check_postcondition
+from .secrets import MissingSecret
+from .secrets import resolve as resolve_secret
 from .store import CairnStore
 
 # A step is considered past saving when this share of the trail is already broken.
@@ -85,6 +87,10 @@ class ReplayResult:
     stale: bool = False
     """The trail is past repairing — the site was rebuilt, not tweaked."""
 
+    needs_login: bool = False
+    """We were bounced to a sign-in page. Nothing is wrong with the trail; the session
+    simply ran out and a person has to sign in again."""
+
     site_facts: list[str] = field(default_factory=list)
     """What is still known about the site after a stale trail is thrown away. This is why
     relearning is cheaper than a first visit."""
@@ -116,12 +122,15 @@ class Executor:
         self.browser = browser
         self.events = emitter or Emitter()
 
+    _domain: str = ""
+
     def run(self, domain: str, *, start_url: str | None = None) -> ReplayResult:
         """Walk the remembered trail for one site.
 
         `start_url` overrides the first step's destination. That is how the demo points a
         trail learned on the normal site at the redesigned one, without editing memory.
         """
+        self._domain = domain
         playbook = self._load(domain)
         started = time.perf_counter()
         self.browser.saved_files.clear()
@@ -171,6 +180,21 @@ class Executor:
                     url=request.url,
                 )
             )
+            # Being signed out looks exactly like a broken step, and asking an AI to
+            # repair its way past a login page would waste a run and teach it nonsense.
+            if self.browser.looks_signed_out():
+                self._finish(playbook, metrics, started, succeeded=False)
+                return ReplayResult(
+                    ok=False,
+                    metrics=metrics,
+                    needs_login=True,
+                    reason=(
+                        f"{playbook.domain} asked to sign in again. The trail is fine — "
+                        f"the session ran out."
+                    ),
+                    saved_files=list(self.browser.saved_files),
+                )
+
             # That step's locators just took a miss. If that tipped the whole trail past
             # half broken, stop asking for repairs and relearn instead.
             if playbook.is_stale:
@@ -197,6 +221,12 @@ class Executor:
         tried: list[str] = field(default_factory=list)
         reason: str = ""
         duration_ms: int = 0
+
+    def _value_for(self, step: Step, domain: str) -> str:
+        """What to type. A secret is fetched from this machine, never from memory."""
+        if step.secret:
+            return resolve_secret(domain, step.secret)
+        return step.value or ""
 
     def _replay_step(self, step: Step, *, start_url: str | None) -> _StepOutcome:
         began = time.perf_counter()
@@ -228,7 +258,9 @@ class Executor:
                 continue
 
             try:
-                self._do(step, target)
+                self._do(step, target, domain=self._domain)
+            except MissingSecret:
+                raise
             except Exception:
                 locator.record_miss()
                 self.events.emit(DriftDetected(index=step.index, locator=label))
@@ -248,11 +280,11 @@ class Executor:
         outcome.reason = "every remembered way of finding this went stale"
         return outcome
 
-    def _do(self, step: Step, target) -> None:
+    def _do(self, step: Step, target, *, domain: str) -> None:
         if step.action == "click":
             self.browser.click(target)
         elif step.action == "fill":
-            self.browser.fill(target, step.value or "")
+            self.browser.fill(target, self._value_for(step, domain))
         elif step.action == "select":
             self.browser.select(target, step.value or "")
         elif step.action == "press":

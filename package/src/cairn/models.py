@@ -119,6 +119,13 @@ class Step:
     value: str | None = None
     repairs: int = 0
 
+    secret: str | None = None
+    """Names a value this step needs but must never remember, such as "password".
+
+    When this is set, `value` stays empty and the real value is looked up on the machine
+    running the replay. A password in a memory file is a password in a backup, a sync
+    folder and a support ticket."""
+
     @property
     def health(self) -> float:
         """The best locator we have is how healthy the step is."""
@@ -139,6 +146,7 @@ class Step:
             "postcondition": self.postcondition.to_dict(),
             "locators": [loc.to_dict() for loc in self.locators],
             "repairs": self.repairs,
+            "secret": self.secret,
             "health": round(self.health, 3),
         }
 
@@ -152,6 +160,7 @@ class Step:
             postcondition=Postcondition.from_dict(raw["postcondition"]),
             locators=[Locator.from_dict(loc) for loc in raw.get("locators", [])],
             repairs=raw.get("repairs", 0),
+            secret=raw.get("secret"),
         )
 
 

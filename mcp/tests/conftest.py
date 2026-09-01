@@ -57,15 +57,26 @@ def demo_server() -> Iterator[str]:
     thread.join(timeout=5)
 
 
+@pytest.fixture(autouse=True)
+def demo_password(demo_server, monkeypatch):
+    """Cairn never stores passwords, so replay is given one the way a real user would."""
+    from cairn.browser import domain_of
+    from cairn.secrets import env_var_name
+
+    monkeypatch.setenv(env_var_name(domain_of(demo_server), "password"), "hunter2")
+
+
 @pytest.fixture
 def mcp_server(tmp_path):
     """A server with its own memory database, torn down properly after each test."""
     from cairn_mcp.server import build_server
 
+    # profile="" means a clean browser. Tests must never touch the real signed-in one.
     server = build_server(
         db_path=str(tmp_path / "memory.db"),
         headless=True,
         downloads=str(tmp_path / "downloads"),
+        profile="",
     )
     yield server
     server.cairn_tools.close()
