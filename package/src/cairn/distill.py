@@ -30,6 +30,8 @@ def distill(trace: list[TraceEntry], *, domain: str, task: str) -> Playbook:
             secret=entry.secret,
             postcondition=postcondition_for(entry),
             locators=locators_for(entry),
+            dialog_message=(entry.dialog or {}).get("message"),
+            dialog_choice=(entry.dialog or {}).get("choice"),
         )
         for position, entry in enumerate(trace, start=1)
     ]

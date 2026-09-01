@@ -89,7 +89,7 @@ Two decisions were locked by Rohit on 2026-09-01 and are not open again:
 - OK when: on the hard page, the dropdown, shadow-DOM button, iframe button and late link
   are all found and clickable.
 
-### 2.5b. Actionability and waiting (Sep 2)
+### 2.5b. Actionability and waiting (Sep 2) - DONE 2026-09-01
 - Wait for `visible` (which also waits for stable), not `attached`. **This is a live bug** -
   today Cairn can click an element that is still animating in.
 - `wait_for` verb: url | element | text | idle (`networkidle`). A React dashboard is blank
@@ -121,7 +121,7 @@ Two decisions were locked by Rohit on 2026-09-01 and are not open again:
 - Frame-aware durable locators: a stored locator inside an iframe must name the frame too.
 - OK when: ten locator kinds mean a step has ten chances to survive a redesign, not four.
 
-### 2.5f. Page events (Sep 3)
+### 2.5f. Page events (Sep 3) - DONE 2026-09-01
 - **Dialogs** - handle, record the choice and the message, and stop on replay if the message
   changed. Playwright dismisses by default, which would silently cancel a save.
 - **Popups / new tabs** - record which tab the trail continues in. Never guess.

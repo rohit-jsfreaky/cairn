@@ -433,6 +433,9 @@ EXERCISED = {
     "forward",
     "reload",
     "wait",
+    # Covered in tests/test_page_events.py, which is where the browser events live.
+    "wait_for",
+    "switch_tab",
 }
 
 

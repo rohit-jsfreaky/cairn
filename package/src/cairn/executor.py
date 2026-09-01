@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import actions
-from .browser import Browser
+from .browser import ACCEPT, Browser
 from .events import (
     DriftDetected,
     Emitter,
@@ -253,6 +253,10 @@ class Executor:
             return self._StepOutcome(reason="the page did not arrive where it should have")
 
         outcome = self._StepOutcome()
+        # A step that answered a confirm box last time expects the same wording this time.
+        self.browser.dialog_policy = step.dialog_choice or ACCEPT
+        self.browser.last_dialog = None
+
         for locator in step.ranked_locators():
             label = f"{locator.kind}:{locator.value}"
             outcome.tried.append(label)
@@ -272,6 +276,15 @@ class Executor:
                 self.events.emit(DriftDetected(index=step.index, locator=label))
                 continue
 
+            changed = self._dialog_changed(step)
+            if changed:
+                # Never answer a box whose words have changed. A step that recorded
+                # "click OK" on "Save changes?" must not blindly accept one that now
+                # reads "delete 400 rows?". Stop and let a human or the caller look.
+                outcome.reason = changed
+                outcome.duration_ms = int((time.perf_counter() - began) * 1000)
+                return outcome
+
             if check_postcondition(self.browser, step.postcondition):
                 locator.record_hit()
                 outcome.matched_by = label
@@ -285,6 +298,23 @@ class Executor:
 
         outcome.reason = "every remembered way of finding this went stale"
         return outcome
+
+    def _dialog_changed(self, step: Step) -> str | None:
+        """Did a confirm box appear whose wording is not what was recorded?
+
+        Answered dialogs are the one thing replay must not treat as routine. The choice
+        was made once, for a specific question; the same click can mean something
+        completely different behind a different question.
+        """
+        seen = self.browser.last_dialog
+        if seen is None or not step.dialog_message:
+            return None
+        if seen["message"].strip() == step.dialog_message.strip():
+            return None
+        return (
+            f"this step answered {step.dialog_message.strip()!r} before, but the site now "
+            f"asks {seen['message'].strip()!r} — stopping rather than answering it"
+        )
 
     def _do(self, step: Step, target, *, domain: str) -> None:
         """Replay one recorded action.

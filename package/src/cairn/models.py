@@ -168,6 +168,15 @@ class Step:
     value: str | None = None
     repairs: int = 0
 
+    dialog_message: str | None = None
+    """The exact words of the confirm box this step answered, if there was one."""
+    dialog_choice: str | None = None
+    """What was answered: "accept" or "dismiss".
+
+    Both are stored because the choice alone is not safe to replay. A step that recorded
+    "click OK" must never blindly accept a box that now reads "delete 400 rows?" — so on
+    replay a changed message stops the run instead of answering it."""
+
     secret: str | None = None
     """Names a value this step needs but must never remember, such as "password".
 
@@ -196,6 +205,8 @@ class Step:
             "locators": [loc.to_dict() for loc in self.locators],
             "repairs": self.repairs,
             "secret": self.secret,
+            "dialog_message": self.dialog_message,
+            "dialog_choice": self.dialog_choice,
             "health": round(self.health, 3),
         }
 
@@ -210,6 +221,8 @@ class Step:
             locators=[Locator.from_dict(loc) for loc in raw.get("locators", [])],
             repairs=raw.get("repairs", 0),
             secret=raw.get("secret"),
+            dialog_message=raw.get("dialog_message"),
+            dialog_choice=raw.get("dialog_choice"),
         )
 
 
@@ -292,6 +305,13 @@ class SiteKnowledge:
     needs_login: bool = False
     needs_2fa: bool = False
     account_hint: str | None = None
+    overlays: list[str] = field(default_factory=list)
+    """Things that pop up over the page at unpredictable moments — cookie banners, "rate
+    us", survey invitations. Learned once, then cleared automatically forever after.
+
+    This belongs to the site and not to any one trail: an overlay appears on whichever step
+    happens to be running when it decides to show up, so pinning it to a step would be
+    recording an accident."""
     updated_at: str = field(default_factory=utc_now)
 
     def merge(
@@ -301,6 +321,7 @@ class SiteKnowledge:
         needs_login: bool | None = None,
         needs_2fa: bool | None = None,
         account_hint: str | None = None,
+        overlay: str | None = None,
     ) -> SiteKnowledge:
         """Add to what is known. Never replaces the whole record.
 
@@ -311,6 +332,8 @@ class SiteKnowledge:
             cleaned = fact.strip()
             if cleaned and cleaned not in self.notes:
                 self.notes.append(cleaned)
+        if overlay and overlay not in self.overlays:
+            self.overlays.append(overlay)
         if needs_login is not None:
             self.needs_login = needs_login
         if needs_2fa is not None:
@@ -342,6 +365,7 @@ class SiteKnowledge:
             "needs_login": self.needs_login,
             "needs_2fa": self.needs_2fa,
             "account_hint": self.account_hint,
+            "overlays": self.overlays,
             "updated_at": self.updated_at,
         }
 
@@ -353,6 +377,7 @@ class SiteKnowledge:
             needs_login=raw.get("needs_login", False),
             needs_2fa=raw.get("needs_2fa", False),
             account_hint=raw.get("account_hint"),
+            overlays=list(raw.get("overlays", [])),
             updated_at=raw.get("updated_at", utc_now()),
         )
 

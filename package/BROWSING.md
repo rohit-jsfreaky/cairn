@@ -42,8 +42,10 @@ Measured 2026-09-01, before Phase 2.5 began, and updated as each step lands.
 |---|---|---|---|
 | ways to act on an element | 21 | 4 | **21, plus 6 page-level** ✅ 2.5c |
 | ways to find an element | 10 | 4 | **9, plus 2 refinements** ✅ 2.5e |
+| page-level events (dialogs, popups, uploads) | yes | none | **all four, plus overlays** ✅ 2.5f |
+| ways to wait for a page | 5 | 1 (fixed sleep) | **5 real waits** ✅ 2.5b |
 | ways to read from a page | 18 | 1 (page text) | **12, plus 5 new postcondition kinds** ✅ 2.5d |
-| page-level events (dialogs, popups, uploads) | yes | none | none — still to do (2.5f) |
+
 | frames / shadow DOM | yes | none | none — still to do (2.5a) |
 
 It started at roughly a quarter, and the missing parts were ordinary things: a hover menu,
@@ -234,12 +236,14 @@ This is the cheapest reliability we can buy.
 |---|---|---|
 | `goto` | `goto` | **yes**, have it |
 | `go_back` | `back` | **yes** — many flows depend on it |
-| `go_forward` | — | **no**, never needed in a recorded task |
+| `go_forward` | `forward` | **built anyway** | this table said no. It came free with `back` and costs one line, so it is in and tested. Say the word and it goes |
 | `reload` | `reload` | **yes** — the standard fix for a stuck dashboard |
 | `url`, `title`, `content` | internal | **yes** |
 | `set_content` | — | **no** — that is fabricating a page |
 
-### Waiting — the thing modern sites need most
+### Waiting — the thing modern sites need most — ✅ BUILT (2.5b, 2026-09-01)
+
+In `src/cairn/waits.py`, reached through the `wait_for` action as `kind:subject`.
 | Playwright | Cairn | in? | why |
 |---|---|---|---|
 | `wait_for_load_state("networkidle")` | `wait_for(idle)` | **yes** | a React dashboard is blank until its data arrives. Without this, `look()` sees an empty page — the single most likely cause of failure on PostHog |
@@ -249,7 +253,7 @@ This is the cheapest reliability we can buy.
 | `wait_for_timeout` | `wait(seconds)` | **keep, discourage** | a fixed sleep is a last resort; the description should say so |
 | `wait_for_function` | — | **no** | arbitrary JavaScript |
 
-### Events that hang a run if ignored
+### Events that hang a run if ignored — ✅ BUILT (2.5f, 2026-09-01)
 These are not element actions. If they are not handled, the browser simply stops.
 
 | Playwright | Cairn | in? | why |
@@ -407,6 +411,9 @@ Scheduled as **Phase 2.5, Sep 2-3**. `MASTER-PLAN.md` carries the day-by-day sch
 
 ## Progress
 
+- **2.5b — waiting: DONE 2026-09-01.** Five real waits (element, gone, text, url,
+  idle) and the `attached` → `visible` fix. The viewport was fixed back in 2.5c.
+- **2.5f — page events: DONE 2026-09-01.** Dialogs, tabs, overlays, file choosers. 34 tests.
 - **2.5e — finding: DONE 2026-09-01.** Nine locator kinds plus `nth` and
   `has_text` refinements. 34 tests.
 - **2.5d — reading: DONE 2026-09-01.** 12 read kinds and 5 new postcondition kinds,
@@ -414,5 +421,33 @@ Scheduled as **Phase 2.5, Sep 2-3**. `MASTER-PLAN.md` carries the day-by-day sch
 - **2.5c — the action set: DONE 2026-09-01.** All 21 `Locator` actions plus 6 page-level
   ones, in one registry, wired into both the cold and the warm path. 46 tests. Five real
   bugs found on the way, listed in section 1.
-- Still to do: 2.5a snapshot, 2.5b waiting, 2.5f page events, 2.5g the MCP surface,
-  2.5h the hard page.
+- Still to do: **2.5a snapshot**, 2.5g the MCP surface, 2.5h the hard page.
+
+### What 2.5b and 2.5f actually changed
+
+**The `attached` bug was real.** `resolve` waited for `attached`, which is true the moment
+an element exists in the page — including while it is still sliding into place and cannot
+receive a click. It now waits for `visible`, which also waits for it to stop moving. Any
+site with an animation could have been clicked mid-flight.
+
+**Dialogs are answered, never ignored.** An unanswered `confirm()` blocks every later step:
+the browser simply stops. Cairn accepts by default and records both the wording and the
+choice. Playwright's own default is to *dismiss*, which silently cancels a save — the run
+looks like it worked while nothing happened. On replay, a step that answered "Save
+changes?" **stops** if the box now reads "Delete 400 rows?".
+
+**A new tab is noticed but never switched to.** Which tab a trail continues in is recorded,
+not guessed.
+
+**`upload` covers both shapes.** Plenty of sites hide the real file input behind a styled
+button, so attaching to the element is impossible; clicking it opens the chooser, which
+Playwright can catch. One verb, both cases.
+
+**Overlays are site knowledge, not steps.** A cookie banner appears whenever the site feels
+like it, not at a fixed point in a flow — so pinning it to a step records an accident.
+`dismiss_when_seen` registers it against the site, and `SiteKnowledge.overlays` remembers
+it. This is the classic killer of recorded flows, and Playwright had the answer built in.
+
+**One bug found:** attaching the download listener twice queued the same file twice, and
+saving an already-saved download fails — so the file silently never reached disk. Found by
+the download test that already existed for exactly this class of failure.

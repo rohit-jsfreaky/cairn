@@ -242,6 +242,38 @@ which walks every locator an element offers and demands it find that element:
 A locator that is stored but never resolves is worse than none: it costs a failed attempt
 on every replay, forever.
 
+### 2.5b and 2.5f are DONE (2026-09-01) — waiting, and page events
+
+`waits.py`: five real waits — `element`, `gone`, `text`, `url`, `idle` — reached through
+one `wait_for` action written as `kind:subject`. None of them is a sleep. The one real
+sleep, `wait`, now says in its own description that it is a last resort.
+
+**The `attached` bug was real and is fixed.** `resolve` waited for `attached`, which is
+true the moment an element exists — including while it is still animating in and cannot be
+clicked. Now `visible`, which also waits for it to stop moving.
+
+Page events, all four plus overlays:
+
+- **Dialogs.** Answered, never ignored — an unanswered `confirm()` stops the browser dead.
+  Accept is the default because Playwright's default, dismiss, silently cancels saves. Both
+  the wording and the choice are recorded, and replay **stops** if a step that answered
+  "Save changes?" meets "Delete 400 rows?".
+- **Tabs.** A new tab is noticed and listed, never switched to automatically. `switch_tab`
+  is marked `session_handled` in the registry, because it needs Cairn's own tab list and
+  `actions.perform` deliberately only knows Playwright.
+- **File choosers.** Folded into `upload`. If the target is a real file input it is
+  attached to directly; otherwise clicking it opens the chooser, which is caught. Many
+  sites hide the input behind a styled button, so one verb has to cover both.
+- **Overlays.** `dismiss_when_seen` uses Playwright's `add_locator_handler`, and
+  `SiteKnowledge.overlays` remembers them. Registered against the **site**, not the step: a
+  cookie banner appears whenever the site feels like it, so pinning it to a step would be
+  recording an accident. This is the classic killer of recorded flows.
+
+**One bug I introduced, caught by an existing test:** the download listener was being
+attached twice when a tab was seen again, so the same file was queued twice and saving an
+already-saved download fails — the file silently never reached disk. Listeners are now
+attached once per page.
+
 ## Next action
 
 **2.5a — the snapshot**, then 2.5b (waiting), 2.5d (reading), 2.5e (locators), 2.5f (events),
@@ -264,6 +296,8 @@ is the biggest remaining gap between "demo" and "product".
 ## Session log
 
 - **2026-08-31** — folder created, plan written. No code.
+- **2026-09-01 (later)** — Phases 2.5b + 2.5f: five real waits, the attached→visible
+  fix, dialogs, tabs, overlays, file choosers. 34 tests. 262 engine + 36 MCP pass.
 - **2026-09-01 (later)** — Phase 2.5e: nine locator kinds plus nth/has_text
   refinements, 34 tests. 228 engine + 36 MCP pass. Two bugs found by the test that
   demands every stored locator actually resolve to its own element.

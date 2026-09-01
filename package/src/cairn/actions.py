@@ -26,6 +26,8 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Locator as PWLocator
 from playwright.sync_api import Page
 
+from . import waits
+
 # What a step should check afterwards when the caller does not say. "observed" means work it
 # out from what actually changed on the page, which is what `distill` already does.
 OBSERVED = "observed"
@@ -51,6 +53,10 @@ class ActionSpec:
     needs_second_target: bool = False
     recordable: bool = True
     verifies_with: str = OBSERVED
+    session_handled: bool = False
+    """Carried out by the Session rather than here, because it needs something Playwright
+    alone does not have — the list of tabs Cairn is keeping track of. Declared in the
+    registry so one list still describes every action."""
 
     def describe(self) -> str:
         """One line for the tool description an AI reads."""
@@ -209,10 +215,31 @@ ACTIONS: dict[str, ActionSpec] = {
         needs_target=False,
         value_means='"down", "up", "top", "bottom", or a number of pixels',
     ),
+    "switch_tab": ActionSpec(
+        "switch_tab",
+        'continue in another tab. A site that opens a new tab — "open in new tab", most '
+        "sign-in-with-Google flows — leaves the trail in the old one until you move",
+        needs_target=False,
+        value_means='"latest", "main", or a tab number starting at 0',
+        session_handled=True,
+    ),
+    "wait_for": ActionSpec(
+        "wait_for",
+        "wait until something is actually true. THE RIGHT WAY TO WAIT — a page that loads "
+        "its content late is the most common reason a run fails",
+        needs_target=False,
+        value_means=(
+            "what to wait for, as kind:subject — "
+            + ", ".join(
+                f"{spec.name}:..." if spec.needs_value else spec.name
+                for spec in waits.WAITS.values()
+            )
+        ),
+    ),
     "wait": ActionSpec(
         "wait",
-        "wait a fixed number of seconds. Prefer wait_for — a fixed wait is either too "
-        "short and flaky or too long and slow",
+        "wait a fixed number of seconds. LAST RESORT — prefer wait_for. A fixed wait is "
+        "either too short and flaky or too long and slow on every run forever",
         needs_target=False,
         value_means="seconds",
     ),
@@ -329,7 +356,24 @@ def _upload(page: Page, t: _T, value: str | None, second: _T | None) -> None:
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         raise ActionNeedsMore(f"no file at {', '.join(missing)}")
-    t.set_input_files(paths)
+
+    # Two shapes of the same task. Plenty of sites hide the real file input and show a
+    # styled button instead, so attaching to the element directly is not always possible;
+    # clicking it opens the operating system's file chooser, which Playwright can catch.
+    if _is_file_input(t):
+        t.set_input_files(paths)
+        return
+    with page.expect_file_chooser() as caught:
+        t.click()
+    caught.value.set_files(paths)
+
+
+def _is_file_input(target: _T) -> bool:
+    if target.count() == 0:
+        return False
+    tag = (target.evaluate("el => el.tagName") or "").lower()
+    kind = (target.get_attribute("type") or "").lower()
+    return tag == "input" and kind == "file"
 
 
 def _scroll_to(page: Page, t: _T, value: str | None, second: _T | None) -> None:
@@ -420,6 +464,16 @@ def _wait(page: Page, t: _T | None, value: str | None, second: _T | None) -> Non
     page.wait_for_timeout(float(value or DEFAULT_WAIT_SECONDS) * MS_PER_SECOND)
 
 
+def _wait_for(page: Page, t: _T | None, value: str | None, second: _T | None) -> None:
+    waits.wait_for(value or "idle", page=page)
+
+
+def _switch_tab(page: Page, t: _T | None, value: str | None, second: _T | None) -> None:
+    # Unreachable: `Session._perform` handles every `session_handled` action before it gets
+    # here. Present so the registry and the runner table stay in step.
+    raise AssertionError("switch_tab should have been handled by the session")
+
+
 _RUNNERS: dict[str, Any] = {
     "click": _click,
     "double_click": _double_click,
@@ -448,6 +502,8 @@ _RUNNERS: dict[str, Any] = {
     "reload": _reload,
     "scroll": _scroll,
     "wait": _wait,
+    "wait_for": _wait_for,
+    "switch_tab": _switch_tab,
 }
 
 # These have a sensible default, so a missing value is not an error.

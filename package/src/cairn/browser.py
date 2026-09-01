@@ -38,6 +38,16 @@ from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PWTimeout
 
 from .models import Locator
+from .waits import LOCATOR_WAIT_MS
+
+# What to do with a confirm box. Accepting is the default because Playwright's own
+# default — dismissing — silently cancels saves and submits.
+ACCEPT = "accept"
+DISMISS = "dismiss"
+
+# Which tab to continue in.
+LATEST_TAB = "latest"
+MAIN_TAB = "main"
 
 # A fixed window for every run. Site layout depends on width - below a breakpoint the
 # nav collapses into a hamburger button, so a trail recorded at one size cannot be
@@ -361,6 +371,10 @@ def domain_of(url: str) -> str:
     return parsed.netloc or url
 
 
+class NoSuchTab(RuntimeError):
+    """Asked to continue in a tab that is not open."""
+
+
 class ProfileInUse(RuntimeError):
     """Something else already has Cairn's browser profile open."""
 
@@ -394,6 +408,17 @@ class Browser:
         self.last_download_path: str | None = None
         self.saved_files: list[str] = []
         self._pending_downloads: list[Any] = []
+        self.dialog_policy: str = ACCEPT
+        """What to do with a confirm box when one appears.
+
+        Accepting by default is the deliberate choice. Playwright's own default is to
+        dismiss every dialog, and dismissing silently cancels a save or a submit — the run
+        appears to succeed while nothing happened. Whatever is chosen, the message and the
+        choice are both recorded, and replay stops if the message has changed."""
+        self.last_dialog: dict[str, str] | None = None
+        self.tabs: list[Page] = []
+        self._watched: list[Page] = []
+        self._overlays: list[str] = []
 
     # ------------------------------------------------------------- lifecycle
 
@@ -428,8 +453,94 @@ class Browser:
             )
             self._page = self._context.new_page()
 
-        self._page.on("download", self._remember_download)
+        self.tabs = [self._page]
+        self._watch(self._page)
+        # A tab opened by the site — "open in new tab", and most sign-in-with-Google
+        # flows — arrives here. It is never switched to automatically: which tab a trail
+        # continues in is a decision to record, not to guess.
+        self._context.on("page", self._remember_tab)
         return self
+
+    def _watch(self, page: Page) -> None:
+        """Attach the listeners every tab needs, including tabs the site opens itself.
+
+        Once per page and never twice. A second download listener queues the same file
+        twice, and saving an already-saved download fails — so the file silently never
+        reaches disk.
+        """
+        if page in self._watched:
+            return
+        self._watched.append(page)
+        page.on("download", self._remember_download)
+        page.on("dialog", self._answer_dialog)
+
+    def _remember_tab(self, page: Page) -> None:
+        if page not in self.tabs:
+            self.tabs.append(page)
+        self._watch(page)
+
+    def _answer_dialog(self, dialog: Any) -> None:
+        """Answer a confirm box, and write down both the words and the answer.
+
+        An unanswered dialog blocks every later step: the browser simply stops. So one of
+        these must always run — doing nothing is not a neutral option.
+        """
+        self.last_dialog = {
+            "type": dialog.type,
+            "message": dialog.message,
+            "choice": self.dialog_policy,
+        }
+        if self.dialog_policy == ACCEPT:
+            dialog.accept()
+        else:
+            dialog.dismiss()
+
+    # ------------------------------------------------------------------ tabs
+
+    def switch_tab(self, which: str = LATEST_TAB) -> Page:
+        """Continue in another tab. `latest`, `main`, or a number from 0."""
+        self.tabs = [page for page in self.tabs if not page.is_closed()]
+        if not self.tabs:
+            raise NoSuchTab("every tab has been closed")
+
+        if which == LATEST_TAB:
+            chosen = self.tabs[-1]
+        elif which == MAIN_TAB:
+            chosen = self.tabs[0]
+        else:
+            try:
+                chosen = self.tabs[int(which)]
+            except (ValueError, IndexError):
+                raise NoSuchTab(
+                    f"no tab {which!r}. There are {len(self.tabs)} open, numbered from 0"
+                ) from None
+
+        self._page = chosen
+        chosen.bring_to_front()
+        return chosen
+
+    # -------------------------------------------------------------- overlays
+
+    def dismiss_when_seen(self, selector: str) -> None:
+        """Clear an overlay automatically, whenever it gets in the way.
+
+        Cookie banners and "rate us" pop-ups do not appear at a fixed point in a flow —
+        they appear whenever the site feels like it, which is why they break recorded
+        trails so reliably. Playwright can watch for one and clear it the moment it blocks
+        an action, so it never becomes a step at all.
+
+        Registered against the site, not the step, and remembered in site knowledge.
+        """
+        if selector in self._overlays:
+            return
+        self._overlays.append(selector)
+        target = self.page.locator(selector)
+        self.page.add_locator_handler(target, lambda overlay: overlay.click(), times=None)
+
+    @property
+    def overlays(self) -> list[str]:
+        """The overlays currently being watched for."""
+        return list(self._overlays)
 
     def stop(self) -> None:
         for closer in (self._context, self._browser):
@@ -438,6 +549,9 @@ class Browser:
         if self._playwright is not None:
             self._playwright.stop()
         self._playwright = self._browser = self._context = self._page = None
+        self.tabs = []
+        self._watched = []
+        self._overlays = []
 
     def __enter__(self) -> Browser:
         return self.start()
@@ -509,7 +623,7 @@ class Browser:
         trimmed = cut[:edge] if edge > limit // 2 else cut
         return trimmed + newline + "…"
 
-    def resolve(self, locator: Locator, *, timeout_ms: int = 1500) -> PWLocator | None:
+    def resolve(self, locator: Locator, *, timeout_ms: int = LOCATOR_WAIT_MS) -> PWLocator | None:
         """Turn a stored locator back into something on the page, or None if it misses.
 
         Returning None rather than raising is deliberate: a miss is normal and expected
@@ -519,7 +633,10 @@ class Browser:
             found = self._to_playwright(locator)
             if found is None:
                 return None
-            found.first.wait_for(state="attached", timeout=timeout_ms)
+            # "visible", not "attached". Attached only means the element exists in the
+            # page — which is already true while it is sliding into place and cannot yet
+            # receive a click. Visible also waits for it to stop moving.
+            found.first.wait_for(state="visible", timeout=timeout_ms)
             return found.first
         except (PWTimeout, Exception):
             return None

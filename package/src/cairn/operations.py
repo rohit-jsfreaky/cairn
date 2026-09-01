@@ -21,7 +21,7 @@ from typing import Any
 from playwright.sync_api import Error as PlaywrightError
 
 from . import actions, reads
-from .browser import Browser, Element, Snapshot, domain_of
+from .browser import LATEST_TAB, Browser, Element, Snapshot, domain_of
 from .events import Emitter, MemoryWrite
 from .models import Playbook, Postcondition, utc_now
 from .store import CairnStore
@@ -48,6 +48,8 @@ class TraceEntry:
     value: str | None = None
     element: Element | None = None
     secret: str | None = None
+    dialog: dict[str, str] | None = None
+    """The confirm box this step answered, if one appeared: its words and the answer."""
     url_before: str = ""
     url_after: str = ""
     text_gained: str = ""
@@ -115,6 +117,7 @@ class Session:
         self.browser.flush_downloads()
         self.browser.last_download = None
         self.browser.last_download_path = None
+        self.browser.last_dialog = None
 
         element = self._perform(action, ref=ref, value=value, to=to)
 
@@ -136,6 +139,7 @@ class Session:
             url_after=self.browser.page.url,
             text_gained=_first_new_line(text_before, text_after),
             download=self.browser.last_download,
+            dialog=self.browser.last_dialog,
         )
         self.trace.append(entry)
         self._snapshot = None
@@ -146,6 +150,7 @@ class Session:
             "url": entry.url_after,
             "navigated": entry.navigated,
             "download": entry.download,
+            "dialog": entry.dialog,
             "saved_to": self.browser.last_download_path,
             "secret": secret,
             "note": (
@@ -174,6 +179,10 @@ class Session:
         except actions.UnknownAction as unknown:
             raise ActionFailed(str(unknown)) from unknown
 
+        if spec.session_handled:
+            self._do_here(action, value)
+            return None
+
         element = self._element_for(ref) if spec.needs_target else None
         target = self.browser.locate(element) if element else None
         second = self.browser.locate(self._element_for(to)) if spec.needs_second_target else None
@@ -189,6 +198,14 @@ class Session:
         # already returned, and a select can navigate just as a click can.
         self.browser.settle()
         return element
+
+    def _do_here(self, action: str, value: str | None) -> None:
+        """The few actions that need Cairn's own state rather than just the page."""
+        if action == "switch_tab":
+            self.browser.switch_tab(value or LATEST_TAB)
+            self._snapshot = None
+            return
+        raise ActionFailed(f"{action} is marked session-handled but nothing handles it")
 
     def _element_for(self, ref: str | None) -> Element:
         if ref is None:
