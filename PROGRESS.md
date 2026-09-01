@@ -5,7 +5,12 @@
 
 ## Current state — 2026-09-01
 
-- **Current phase:** 0 (Setup) — plus the landing page, built out of order on Rohit's call.
+- **Current phase:** 1 (the engine). Phase 0 is PASSED.
+- **Phase 0 finish line passed 2026-09-01:** Sibyl memory round-trips across a genuinely
+  separate process on Windows. No account needed — `MemoryClient.local()` works with zero
+  credentials, so the "no key, no account" claim is literally true. Details in RESEARCH.md.
+- **Phase 1a done:** `package/src/cairn/{models,store}.py` + 12 passing tests.
+  `store.py` is the only file in the project that imports `sibyl_memory_client`.
 - **Registered on hack.sibyllabs.org:** NOT CONFIRMED — Rohit was told twice, closes TONIGHT
   Aug 31 23:59 UTC. Ask him directly if unclear.
 - Project named **Cairn** (2026-08-31). Old working name "Muscle Memory" dropped — clashes
@@ -26,19 +31,18 @@
 - [x] Package versions verified on PyPI/npm → `RESEARCH.md`
 - [x] Folder scaffold + plans + rules files
 
-## ▶ START HERE TOMORROW (Sep 1, day 1)
+## ▶ START HERE NEXT
 
-Read `../CLAUDE.md`, then `MASTER-PLAN.md`, then `package/PLAN.md`. Then, in order:
+`package/PLAN.md` step **1b — the demo site**. A tiny FastAPI app in
+`package/tests/demo_site/`, 3-4 pages, with `?variant=b` moving the main control. Both the
+repair tests and the demo video depend on it, so it comes before the browser work.
 
-1. **Check with Rohit:** is registration done? Any Discord answers yet?
-2. **Phase 0 finish line** (30 min): `pip install 'sibyl-memory-cli[mcp]'` → `sibyl init` →
-   `playwright install chromium` → write a throwaway script that saves an entity and reads it
-   back **from a second fresh process**. Confirm Windows paths work for `MemoryClient.local()`.
-3. **Then Phase 1a** — `package/PLAN.md`: models + store + fresh-process test.
+Then 1c (browser + operations), 1d (distill), 1e (executor + repair), 1f (CLI), 1g (real site
++ the deletion-gate test).
 
-Do not skip step 2. If Sibyl does not round-trip on Windows, everything else is built on sand.
+Before 1c: `.venv/Scripts/playwright.exe install chromium` — not installed yet.
 
-No API key is needed for any of this. That is by design — see the product shape.
+Run everything with the repo-root venv: `.venv/Scripts/python.exe`.
 
 ## Positioning answers (settled 2026-08-31 — use these in the README and the pitch)
 
@@ -54,6 +58,7 @@ No API key is needed for any of this. That is by design — see the product shap
 
 - Discord answer pending: does Base Sepolia (testnet) count for the partner bonus?
 - Discord answer pending: is pre-window scaffolding OK if declared as prior work?
+  (Declared in the README either way, so this is not blocking.)
 - Which 1-2 real sites for the demo: not chosen yet. **Criteria (decided 2026-08-31):** a
   BORING task a real person actually repeats — check a dashboard every morning, download a
   monthly invoice/report, refill the same form, pull numbers off an internal tool with no API.
@@ -89,3 +94,7 @@ No API key is needed for any of this. That is by design — see the product shap
   generating product UI were worse than markup and were dropped. Animation: Lenis smooth
   scroll on the GSAP ticker, ScrollTrigger reveals, SplitText headings, DrawSVG, count-ups.
   Logo + favicon drawn as vector from the generated mark.
+- **2026-09-01 (engine started)** — Registration confirmed done. Repo created and pushed by
+  Rohit (public, MIT). Phase 0 passed: Sibyl round-trips across a fresh process on Windows,
+  and needs no account. Phase 1a built: models + store + 12 tests, all green. Sibyl version
+  numbers in RESEARCH.md corrected — the ones read off PyPI on 08-31 were already stale.

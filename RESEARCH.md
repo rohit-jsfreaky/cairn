@@ -307,6 +307,53 @@ Cairn copies the structure but draws the dot grid in CSS (a 16px `radial-gradien
 masked with `radial-gradient(ellipse 62% 95% at 50% 108%)`) so it stays crisp at any width
 instead of being baked into a raster at one size.
 
+## Sibyl Memory — verified by installing it, not by reading docs (2026-09-01)
+
+Installed into `.venv` on this Windows machine. **Versions differ from the PyPI listing
+recorded on 2026-08-31 — trust these:**
+
+| package | recorded 08-31 | actually installed 09-01 |
+|---|---|---|
+| sibyl-memory-client | 0.7.0 | **0.8.0** |
+| sibyl-memory-cli | 0.3.23 | **0.4.0** |
+| sibyl-memory-mcp | 0.1.14 | **0.2.0** |
+| mcp | 2.1.1 (wrong) | **1.29.1** |
+| playwright | 1.62.0 | 1.62.0 |
+
+`sibyl-memory-hermes` 0.4.0 comes along as a dependency of the CLI.
+
+**API confirmed by introspection** (`inspect.signature`), matches what the docs said:
+
+```python
+MemoryClient.local(path='~/.sibyl-memory/memory.db', *, tenant_id=..., tier='free', ...)
+set_entity(category, name, body, *, status=None)   get_entity(category, name)
+write_event(*, evaluated=None, acted=None, forward=None, extra=None, ts=None)
+read_events(*, limit=50, since=None, until=None)
+search_entities(query, *, limit=20, prefix=False, category=None) -> SearchResults
+archive_entity(category, name, reason=None)        delete_entity(category, name)
+list_entities(...)  set_state/get_state  set_reference/get_reference
+```
+
+Errors to catch: `NotFoundError`, `ConflictError`, `CapExceededError`, `SchemaError`
+(all exported from the package root).
+
+### Two findings that change what we tell people
+
+1. **No account is needed.** `MemoryClient.local()` works with zero credentials — only
+   `memory.db` is created, no `credentials.json`. So the landing page claim "no key, no
+   account" is literally true. `sibyl init` opens a browser activation flow
+   (wallet SIWE, or email plus a 6-digit terminal code) and is **optional**. Do NOT run
+   `sibyl setup` — that wires Sibyl in as Claude Code's own memory provider, which is a
+   different product surface and would confuse the demo.
+
+2. **Free tier has a 5 MB soft cap.** `free_tier_status()` returns
+   `soft_cap_bytes: 5242880`. Our playbooks are a few KB, so this is not a risk, but the
+   journal grows forever — worth checking before the demo if we run hundreds of times.
+
+**PHASE 0 FINISH LINE PASSED (2026-09-01).** Process A wrote an entity, exited; a second,
+separate process read it back. Windows paths work with the default location
+`C:\Users\<user>\.sibyl-memory\memory.db`. Open question 5 in this file is now closed.
+
 ## OPEN QUESTIONS (do not build on assumptions for these)
 
 1. Does Base **Sepolia** count for the partner bonus, or mainnet only? → asked in Discord,
@@ -314,4 +361,4 @@ instead of being baked into a raster at one size.
 2. Pre-Sep-1 scaffolding OK if declared as prior work? → asked in Discord.
 3. ~~Anthropic API key + budget~~ — CLOSED: no Anthropic, see Model policy above.
 4. Exact x402 Python SDK usage (package `x402` 2.21.0) — open its docs before Phase 5.
-5. sibyl-memory-client: confirm Windows path handling for `MemoryClient.local()` on Day 0.
+5. ~~sibyl-memory-client: confirm Windows path handling~~ — CLOSED 2026-09-01, it works.

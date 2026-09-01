@@ -69,6 +69,9 @@ first, update it last, every session), `RESEARCH.md` (verified facts + open ques
    verifiable. The rules disqualify fabricated evidence even after payout.
 5. **Never run git commit/push, never create repos.** Rohit does all git himself. He also
    creates the GitHub repo (public, MIT license, must show real commit history).
+   **At the end of every finished piece of work, hand him a ONE-LINE commit message without
+   being asked**, ready to paste: `git commit -m "..."`. One line only — no body, no bullets,
+   no trailers. He copies the whole command and pushes.
 6. **Product-grade only.** No temp fixes, no workarounds, no "quick hack for now". Do the
    proper fix or flag it to Rohit.
 7. **Talk to Rohit in simple English.** Short sentences. No buzzwords, no idioms. Hindi is his
