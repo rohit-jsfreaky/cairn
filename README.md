@@ -96,9 +96,9 @@ Plans live in `MASTER-PLAN.md` and each folder's `PLAN.md`. Live state is in `PR
 
 | phase | what | state |
 |---|---|---|
-| 0 | Setup, prove Sibyl round-trips across a fresh process | in progress |
-| 1 | `package/` — the engine | not started |
-| 2 | `mcp/` — the MCP server | not started |
+| 0 | Setup, prove Sibyl round-trips across a fresh process | **done** |
+| 1 | `package/` — the engine | **built**, 72 tests pass |
+| 2 | `mcp/` — the MCP server | next |
 | 3 | `backend/` | not started |
 | 4 | `frontend/` dashboard | not started |
 | 5 | Base x402 playbook transfer | blocked, cuttable |
@@ -108,6 +108,12 @@ Plans live in `MASTER-PLAN.md` and each folder's `PLAN.md`. Live state is in `PR
 `39×`) and an install command that is not published yet. These are placeholders for layout
 only. They will be replaced with numbers from real runs, or removed, before this project is
 submitted. Nothing in this repo should be read as a measured result until this note says so.
+
+The first real measurement, on the local demo site, is: **9 tool calls → 1**, **6 page reads
+→ 0**, **0 model calls**, and 2.3× wall-clock. The wall-clock figure is deliberately
+unimpressive because the benchmark contains no model thinking time — which is the cost Cairn
+actually removes. A meaningful speed multiplier can only be measured with a real host AI
+driving the cold run, and that arrives with Phase 2.
 
 ## Partner stacks
 

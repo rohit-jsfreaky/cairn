@@ -4,18 +4,20 @@ Four pages, the shape of the boring work Cairn is for:
 
     /  (login)  ->  /invoices  ->  /invoices/{id}  ->  download
 
-Add `?variant=b` to any URL and the site "redesigns itself". Variant B changes exactly
-ONE thing that matters: the download control is renamed, given a different id, and moved
-to the other side of the page. That is deliberate — a repair demo is only convincing if
-the trail breaks in one place and Cairn fixes that one place, rather than the whole
-playbook going stale.
+Three variants, because "the site changed" is not one event, it is two:
 
-What stays identical in both variants, on purpose:
-  - the accessible role of every control
-  - the URL structure
-  - the login flow
-So a locator that matched on CSS breaks, and a locator that matched on role survives.
-That contrast is the whole point of storing ranked locators instead of a recording.
+  a  the original site.
+  b  a REAL break. The download control is renamed, re-id'd, moved, AND its link target
+     changes. Every locator we hold misses, so the step genuinely fails and has to be
+     handed back for repair. This is the variant the repair demo uses.
+  c  a COSMETIC redesign. Renamed, re-id'd and moved exactly like B, but the link target
+     is untouched. The css and text locators miss while the href locator still lands, so
+     the step survives with no repair and no model call at all.
+
+C exists to prove the point of storing several ranked locators instead of recording one
+selector: most redesigns should cost nothing, and only a real break should reach your AI.
+Exactly one step is affected in both, so a repair stays surgical instead of turning the
+whole playbook stale.
 
 Run it:
 
@@ -69,26 +71,30 @@ STYLE = """
 """
 
 
+VARIANTS = ("a", "b", "c")
+
+
 def variant_of(request: Request, variant: str | None) -> str:
     """Variant sticks across links so a whole run stays in one version of the site."""
-    if variant in ("a", "b"):
+    if variant in VARIANTS:
         return variant
-    return request.query_params.get("variant", "a")
+    fallback = request.query_params.get("variant", "a")
+    return fallback if fallback in VARIANTS else "a"
 
 
 def link(path: str, variant: str) -> str:
-    return f"{path}?variant=b" if variant == "b" else path
+    return f"{path}?variant={variant}" if variant != "a" else path
 
 
 def page(title: str, body: str, *, variant: str, nav: bool = True) -> HTMLResponse:
     # Variant B renames the section in the nav as well, so a text locator on the nav
     # has to cope too. The href does not change.
-    invoices_label = "Billing" if variant == "b" else "Invoices"
+    invoices_label = "Invoices" if variant == "a" else "Billing"
     nav_html = (
         f"""<nav>
-              <a href="{link('/invoices', variant)}" class="active">{invoices_label}</a>
-              <a href="{link('/invoices', variant)}">Payments</a>
-              <a href="{link('/invoices', variant)}">Settings</a>
+              <a href="{link("/invoices", variant)}" class="active">{invoices_label}</a>
+              <a href="{link("/invoices", variant)}">Payments</a>
+              <a href="{link("/invoices", variant)}">Settings</a>
             </nav>"""
         if nav
         else ""
@@ -109,7 +115,7 @@ def login_page(request: Request, variant: str | None = Query(None)) -> HTMLRespo
         f"""
         <h1>Sign in</h1>
         <p class="sub">Acme Billing</p>
-        <form method="post" action="{link('/login', v)}">
+        <form method="post" action="{link("/login", v)}">
           <label for="email">Email</label>
           <input id="email" name="email" type="email" value="finance@acme.com" required>
           <label for="password">Password</label>
@@ -139,17 +145,17 @@ def invoice_list(request: Request, variant: str | None = Query(None)) -> HTMLRes
     v = variant_of(request, variant)
     rows = "".join(
         f"""<li class="row">
-              <a href="{link('/invoices/' + inv['id'], v)}">{inv['month']}</a>
+              <a href="{link("/invoices/" + inv["id"], v)}">{inv["month"]}</a>
               <span>
-                <span class="amount">&#8377; {inv['amount']}</span>
-                <span class="tag {inv['state']}">{inv['state']}</span>
+                <span class="amount">&#8377; {inv["amount"]}</span>
+                <span class="tag {inv["state"]}">{inv["state"]}</span>
               </span>
             </li>"""
         for inv in INVOICES
     )
     return page(
         "Invoices",
-        f"""<h1>{'Billing' if v == 'b' else 'Invoices'}</h1>
+        f"""<h1>{"Invoices" if v == "a" else "Billing"}</h1>
             <p class="sub">Three most recent statements</p>
             <ul class="rows">{rows}</ul>""",
         variant=v,
@@ -166,29 +172,31 @@ def invoice_detail(
         return page("Not found", "<h1>No such invoice</h1>", variant=v)
 
     # THE ONE THING THAT MOVES.
-    # Variant A: id="download-btn", label "Download", left aligned.
-    # Variant B: id="get-pdf",     label "Get PDF",  right aligned.
-    # The role stays "link" in both, and the href never changes — so a role or href
-    # locator survives the redesign and only a css/text locator misses.
-    href = link(f"/invoices/{invoice_id}/file", v)
-    if v == "b":
-        action = f"""<div class="toolbar right">
-                       <a class="btn" id="get-pdf" href="{href}">Get PDF</a>
-                     </div>"""
-    else:
+    #   a  id="download-btn"  "Download"  left   href .../file
+    #   b  id="get-pdf"       "Get PDF"   right  href .../download   <- every locator misses
+    #   c  id="get-pdf"       "Get PDF"   right  href .../file       <- href still lands
+    if v == "a":
+        href = link(f"/invoices/{invoice_id}/file", v)
         action = f"""<div class="toolbar">
                        <a class="btn" id="download-btn" href="{href}">Download</a>
+                     </div>"""
+    else:
+        path = "download" if v == "b" else "file"
+        href = link(f"/invoices/{invoice_id}/{path}", v)
+        action = f"""<div class="toolbar right">
+                       <a class="btn" id="get-pdf" href="{href}">Get PDF</a>
                      </div>"""
 
     return page(
         invoice["month"],
-        f"""<h1>{invoice['month']}</h1>
-            <p class="sub">Invoice {invoice['id']} &middot; &#8377; {invoice['amount']}</p>
+        f"""<h1>{invoice["month"]}</h1>
+            <p class="sub">Invoice {invoice["id"]} &middot; &#8377; {invoice["amount"]}</p>
             {action}""",
         variant=v,
     )
 
 
+@app.get("/invoices/{invoice_id}/download")
 @app.get("/invoices/{invoice_id}/file")
 def invoice_file(invoice_id: str) -> Response:
     """A real download, so a 'download happened' postcondition has something to check."""
@@ -204,6 +212,7 @@ if __name__ == "__main__":
     import uvicorn
 
     print("Acme Billing demo site")
-    print("  variant A  http://127.0.0.1:8787/")
-    print("  variant B  http://127.0.0.1:8787/?variant=b")
+    print("  variant A  http://127.0.0.1:8787/            original")
+    print("  variant B  http://127.0.0.1:8787/?variant=b  real break, needs repair")
+    print("  variant C  http://127.0.0.1:8787/?variant=c  cosmetic only, survives")
     uvicorn.run(app, host="127.0.0.1", port=8787, log_level="warning")

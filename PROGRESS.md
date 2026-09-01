@@ -9,8 +9,17 @@
 - **Phase 0 finish line passed 2026-09-01:** Sibyl memory round-trips across a genuinely
   separate process on Windows. No account needed — `MemoryClient.local()` works with zero
   credentials, so the "no key, no account" claim is literally true. Details in RESEARCH.md.
-- **Phase 1a done:** `package/src/cairn/{models,store}.py` + 12 passing tests.
-  `store.py` is the only file in the project that imports `sibyl_memory_client`.
+- **PHASE 1 (the engine) IS BUILT.** 72 tests pass, ruff clean. Browser, look/act/verify,
+  distill, warm executor with drift detection and repair, typed events, CLI, demo site,
+  and the automated deletion gate. `store.py` is still the only file that imports
+  `sibyl_memory_client`.
+- **One finish-line criterion needs your call.** MASTER-PLAN asks for ">=5x faster" on a
+  warm run. Measured on the local demo site it is **2.3x** wall-clock, because both runs do
+  the same six browser actions and our scripted cold run has **no model thinking time in
+  it** — which is the entire cost Cairn actually removes. The numbers that do not depend on
+  model speed are solid: **9 tool calls -> 1, 6 page reads -> 0, 0 model calls**. The real
+  multiplier can only be measured in Phase 2 with a live Claude Code driving the cold run.
+  Detail in `package/PROGRESS.md`. Flagged, not assumed.
 - **Registered on hack.sibyllabs.org:** NOT CONFIRMED — Rohit was told twice, closes TONIGHT
   Aug 31 23:59 UTC. Ask him directly if unclear.
 - Project named **Cairn** (2026-08-31). Old working name "Muscle Memory" dropped — clashes
@@ -33,16 +42,17 @@
 
 ## ▶ START HERE NEXT
 
-`package/PLAN.md` step **1b — the demo site**. A tiny FastAPI app in
-`package/tests/demo_site/`, 3-4 pages, with `?variant=b` moving the main control. Both the
-repair tests and the demo video depend on it, so it comes before the browser work.
+**Phase 2 — `mcp/`.** Wrap the engine as MCP tools so a real Claude Code drives the cold
+path. See `mcp/PLAN.md`. This is the main deliverable and it is not cuttable.
 
-Then 1c (browser + operations), 1d (distill), 1e (executor + repair), 1f (CLI), 1g (real site
-+ the deletion-gate test).
+It also settles the open speed question: a cold run driven by a real model is the only
+honest place to measure the wall-clock multiplier.
 
-Before 1c: `.venv/Scripts/playwright.exe install chromium` — not installed yet.
+Still outstanding from Phase 1g: pick 1-2 real captcha-free sites and prove the loop there
+too. Everything so far is against the local demo site.
 
 Run everything with the repo-root venv: `.venv/Scripts/python.exe`.
+Demo site: `python package/tests/demo_site/app.py` (port 8787, variants a / b / c).
 
 ## Positioning answers (settled 2026-08-31 — use these in the README and the pitch)
 
@@ -98,3 +108,8 @@ Run everything with the repo-root venv: `.venv/Scripts/python.exe`.
   Rohit (public, MIT). Phase 0 passed: Sibyl round-trips across a fresh process on Windows,
   and needs no account. Phase 1a built: models + store + 12 tests, all green. Sibyl version
   numbers in RESEARCH.md corrected — the ones read off PyPI on 08-31 were already stale.
+- **2026-09-01 (Phase 1 built)** — whole engine in one pass: browser, operations, distill,
+  executor, events, CLI, deletion gate. 72 tests green, ruff clean. Two real bugs caught by
+  tests: structural locators were matching whole hrefs including the query string, and the
+  demo site's variant B was not actually breaking anything. Measured cold vs warm: 2.3x
+  wall-clock locally, 9x fewer tool calls, 0 model calls.

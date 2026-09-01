@@ -11,7 +11,7 @@ Nothing in this module talks to memory. That is `store.py`, and only `store.py`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 LocatorKind = Literal["role", "text", "css", "structural"]
@@ -23,7 +23,7 @@ _MISS_WEIGHT = 2.0  # a miss is worse news than a hit is good news
 
 def utc_now() -> str:
     """One timestamp format everywhere: ISO 8601, UTC, seconds precision."""
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 @dataclass
