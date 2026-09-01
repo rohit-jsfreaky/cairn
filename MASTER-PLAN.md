@@ -59,6 +59,29 @@ inside — the engine exposes operations; whoever calls them does the thinking.
 task, it explores through Cairn's tools and learns. Quit Claude Code. Open a fresh session.
 Ask again → one `cairn_run` call, done in seconds. Then `cairn_forget` → slow again.
 
+## Phase 2.5 — The browsing layer · Sep 2–3 · `package/` → `package/PLAN.md` §2.5
+
+**Why this phase exists.** Cairn was tested on a page with a React-style dropdown, a shadow
+DOM, an iframe and a late-loading link. Our snapshot found 1 element; Playwright's found 7.
+The browsing layer is a quarter of what a real website needs, and a memory layer on top of a
+browser that cannot reach the second page of a real site is worth nothing.
+
+The full audit of every Playwright capability, and the reason for every in/out decision, is
+in `package/BROWSING.md`. Read it before starting.
+
+**Not a rewrite.** Stored locators stay durable, so the memory format, the repair logic and
+the deletion gate are untouched. Only "what is on this page" and "what can I do to it"
+change.
+
+**FINISH LINE (all five):**
+1. On the hard page (dropdown built from divs, shadow DOM, iframe, late content, cookie
+   banner) every control is found and can be acted on.
+2. All sixteen actions and all eight reads record, replay and verify on the demo site.
+3. The cold path is ONE `cairn_act` tool with an `action` argument, not sixteen tools, and
+   three vague prompts route to the right action.
+4. A confirm dialog is recorded with its message; replay stops if the message changed.
+5. A cookie banner learned once is dismissed automatically on every later run.
+
 ## Phase 3 — Backend · Sep 6 · `backend/` → `backend/PLAN.md`
 
 Thin FastAPI server over the package: run lifecycle, live event stream (SSE), memory
@@ -74,11 +97,27 @@ The screen that makes memory visible next to the Claude Code terminal in the vid
 **FINISH LINE:** record 60 seconds of cold → warm on the dashboard, show it to someone with
 zero context. They must say "it remembered, that is why it got fast" with no help.
 
-## Phase 5 — Base x402 · Sep 8 · `package/` → `package/PLAN.md` §Phase-5 — CUTTABLE
+## Phase 5a — Agent-to-agent memory · Sep 8 · `package/` + `mcp/` — NOT blocked
 
-**BLOCKED** until Discord answers the testnet question. Agent-to-agent playbook purchase:
-second agent hits an unknown site, finds someone has the playbook, pays via x402 on Base
-Sepolia, imports it, runs warm immediately.
+Split out of Phase 5 because it needs no blockchain and no Discord answer, and because the
+rules say **"coordination and dynamic-storage patterns top the band"** for the 40% that
+matters most. We have dynamic storage already; this is the coordination half, and without it
+we are only answering half of the biggest scoring line.
+
+One agent walks a site and leaves a trail. A SECOND agent — separate session, separate
+Sibyl `tenant_id` — is asked for the same task on a site it has never seen, searches memory,
+finds the trail the first agent left, and runs it in one call.
+
+Uses `store.search_similar` (built, currently unused) and Sibyl's multi-tenancy (noted in
+RESEARCH.md, never used). This is also the prerequisite for 5b.
+
+**FINISH LINE:** two agents with different tenant ids. Agent B has never seen the site,
+finds A's trail through memory, and completes the task in one call with zero model calls.
+
+## Phase 5b — Base x402 · Sep 8 · `package/` → `package/PLAN.md` §Phase-5 — CUTTABLE
+
+**BLOCKED** until Discord answers the testnet question. Adds payment to 5a: agent B pays for
+agent A's playbook via x402 on Base Sepolia before importing it.
 
 **FINISH LINE:** one x402 payment visible on the Base Sepolia explorer, made during a run,
 playbook transferred and used.
@@ -95,10 +134,26 @@ playbook transferred and used.
 
 ---
 
+## The nine days (set 2026-09-01, after Phases 0-2 landed on day one)
+
+| day | what |
+|---|---|
+| Sep 1 | ~~Phase 0, 1, 2~~ **done** |
+| Sep 2-3 | **Phase 2.5** — the browsing layer |
+| Sep 4 | **Phase 1g** — 1-2 real websites, the loop proven off our own demo site |
+| Sep 5 | **Phase 3** — backend |
+| Sep 6-7 | **Phase 4** — dashboard |
+| Sep 8 | **Phase 5a** — agent-to-agent memory. 5b if Discord unblocks it |
+| Sep 9 | **Phase 6** — harden, run everything 5×, record the video |
+| Sep 10 | README, posts, submit by ~21:00 UTC |
+
 ## Cut order when time runs short
 
-1. Phase 5 (x402) → lose the ×1.15, keep everything else
+Rohit's call 2026-09-01: **nothing is being cut up front.** He uses this kind of automation
+himself, so the browsing layer is not a demo prop. This order only applies if a day is lost.
+
+1. Phase 5b (x402) → lose the ×1.15, keep everything else
 2. Frontend polish extras (never the three demo panels)
 3. Backend + frontend entirely — the MCP demo alone still proves everything
-4. NEVER: the engine, the MCP server, the recall beat, the repair beat, `cairn forget`,
-   or the video quality
+4. NEVER: the engine, the MCP server, the browsing layer, agent-to-agent memory, the recall
+   beat, the repair beat, `cairn forget`, or the video quality

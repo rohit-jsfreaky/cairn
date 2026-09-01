@@ -62,6 +62,35 @@ too. Everything so far is against the local demo site.
 Run everything with the repo-root venv: `.venv/Scripts/python.exe`.
 Demo site: `python package/tests/demo_site/app.py` (port 8787, variants a / b / c).
 
+## Next up - Phase 2.5, the browsing layer (Sep 2-3)
+
+A live test on 2026-09-01 showed the browsing layer is about a quarter of what a real
+website needs. On a page with a React-style dropdown, a shadow DOM, an iframe and a
+late-loading link, our snapshot found **1 element**; Playwright's own snapshot found 7 and
+could act on all of them, including inside the iframe.
+
+Full audit of every Playwright capability, with a reason for each in/out decision:
+`package/BROWSING.md`. Steps: `package/PLAN.md` section 2.5.
+
+**Two decisions locked 2026-09-01, not open again:**
+
+1. **One `cairn_act` tool with an `action` argument**, never sixteen MCP tools. Tool choice
+   is the most fragile part of this system - a host AI ignored Cairn completely and used
+   `curl` on the first live test. More tool names makes that worse.
+2. **Dialogs record the choice AND the message.** On replay, stop if the message changed. A
+   trail that recorded "click OK" must never blindly accept a box that now reads "delete 400
+   rows?". Playwright's own default is to dismiss every dialog, which would silently cancel a
+   save - so doing nothing is not neutral either.
+
+**Nothing is being cut.** I argued for trimming the browsing work to half a day and spending
+the rest on the coordination story, since "coordination and dynamic-storage patterns top the
+band" is where the 40% is won. Rohit's call: build all of it. He does this kind of automation
+himself, so the browsing layer is the reason the tool exists, not a demo prop.
+
+The coordination half is now **Phase 5a**, split out of Phase 5 because it needs no
+blockchain and no Discord answer - so both get built. Day-by-day schedule is in
+`MASTER-PLAN.md`.
+
 ## Positioning answers (settled 2026-08-31 — use these in the README and the pitch)
 
 - **vs Playwright MCP:** Playwright MCP has no memory, so run 2 costs what run 1 cost, forever.

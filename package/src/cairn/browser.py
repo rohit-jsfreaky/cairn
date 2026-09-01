@@ -25,16 +25,23 @@ Three things here matter more than the rest:
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Locator as PWLocator
 from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PWTimeout
 
 from .models import Locator
+
+# A fixed window for every run. Site layout depends on width - below a breakpoint the
+# nav collapses into a hamburger button, so a trail recorded at one size cannot be
+# replayed at another. Whatever this is, it must not change between runs.
+VIEWPORT = {"width": 1280, "height": 800}
 
 # Where downloaded files land unless a caller says otherwise. A default matters: a task
 # like "download this month's invoice" is not done if the file only existed inside a
@@ -254,9 +261,16 @@ class Browser:
         headless: bool = True,
         downloads: Path | None = None,
         profile: Path | None = None,
+        touch: bool = False,
     ):
-        """`profile=None` means a clean browser every time. Pass a path to stay signed in."""
+        """`profile=None` means a clean browser every time. Pass a path to stay signed in.
+
+        `touch=True` makes this a touch device, which is what the `tap` action needs. It is
+        off by default on purpose: some sites serve a different, mobile layout the moment
+        they detect touch, and that would change what every other trail sees.
+        """
         self._headless = headless
+        self._touch = touch
         self._downloads = Path(downloads) if downloads is not None else DEFAULT_DOWNLOADS
         self._profile = Path(profile) if profile is not None else None
         self._playwright = None
@@ -281,6 +295,8 @@ class Browser:
                     str(self._profile),
                     headless=self._headless,
                     accept_downloads=True,
+                    viewport=VIEWPORT,
+                    has_touch=self._touch,
                 )
             except Exception as clash:
                 self._playwright.stop()
@@ -294,7 +310,9 @@ class Browser:
             self._page = pages[0] if pages else self._context.new_page()
         else:
             self._browser = self._playwright.chromium.launch(headless=self._headless)
-            self._context = self._browser.new_context(accept_downloads=True)
+            self._context = self._browser.new_context(
+                accept_downloads=True, viewport=VIEWPORT, has_touch=self._touch
+            )
             self._page = self._context.new_page()
 
         self._page.on("download", self._remember_download)
@@ -410,21 +428,26 @@ class Browser:
             return page.locator(f'[href="{path}"], [href^="{path}?"], [href^="{path}#"]')
         return None
 
-    def click(self, target: PWLocator) -> None:
-        target.click()
-        self.page.wait_for_load_state("domcontentloaded")
+    def locate(self, element: Element) -> PWLocator:
+        """Turn a snapshot element into something Playwright can act on.
+
+        One seam, so that when stored locators learn to name their iframe (2.5e) only this
+        method changes.
+        """
+        return self.page.locator(element.css).first
+
+    def settle(self) -> None:
+        """Let the page catch up after an action.
+
+        Runs after every action rather than after a chosen few. The old code waited only
+        after `click` and `press`, so a `select` that navigated was never waited for and
+        the next snapshot could be read from the page being replaced.
+        """
+        # Navigating away mid-wait is normal, not a failure. The next call re-reads
+        # whatever page we landed on.
+        with suppress(PlaywrightError):
+            self.page.wait_for_load_state("domcontentloaded")
         self.flush_downloads()
-
-    def fill(self, target: PWLocator, value: str) -> None:
-        target.fill(value)
-
-    def press(self, target: PWLocator, key: str) -> None:
-        target.press(key)
-        self.page.wait_for_load_state("domcontentloaded")
-        self.flush_downloads()
-
-    def select(self, target: PWLocator, value: str) -> None:
-        target.select_option(value)
 
     def looks_signed_out(self) -> bool:
         """Does this look like we were bounced back to a sign-in page?

@@ -126,11 +126,79 @@ Rohit needs to decide whether Phase 1 counts as closed on that basis. Flagged, n
 
 ## Next action
 
+**Phase 2.5 - the browsing layer.** Read `BROWSING.md` first, then `PLAN.md` section 2.5.
+
+The short version of why: our page snapshot is hand-written JavaScript that finds a fixed
+list of tags. On a page with a React-style dropdown, a shadow DOM, an iframe and a
+late-loading link it found 1 element. `page.locator("body").aria_snapshot(mode="ai")` found
+7, with a working handle for every one - including inside the iframe. About 60 lines of my
+JavaScript get deleted.
+
+Three things in that audit I did not know about and should have:
+
+- **`add_locator_handler`** - Playwright's built-in answer to overlays that appear at random
+  moments (cookie banners, "rate us" pop-ups). Register once and it clears them automatically
+  whenever one blocks an action. This is the classic killer of recorded flows.
+- **We wait for the wrong thing.** `attached` means the element exists. `visible` also waits
+  for it to stop moving. On any animated site we can click something mid-flight. Live bug.
+- **Six more locator kinds**, especially `test_id`, which almost never changes. Ten ways to
+  find an element instead of four is the cheapest reliability available.
+
+### 2.5c is DONE (2026-09-01) — the action set
+
+`actions.py` is a registry of **27 actions**, not a chain of `if` statements. Each entry
+carries what it needs, what its value means, how it is verified, and whether it is worth
+recording at all. `catalogue()` generates the tool description from that registry, so the
+list an AI reads can never drift from the list that exists.
+
+Wired into both paths: `operations.py` (cold) and `executor.py` (warm) now dispatch through
+the same registry. 46 new tests, one per action, plus `test_every_action_is_exercised`
+which fails if an action is added without a test.
+
+**Five real bugs this turned up, all of which would have hit a real site:**
+
+1. **`executor._do` had no `else`.** Warm replay silently did *nothing* for any action
+   outside the four it knew. If the page already satisfied the postcondition, that silent
+   no-op was recorded as a successful replay — a false pass, the worst kind.
+2. **Only `click` and `press` waited for the page.** A `select` that triggered a navigation
+   was never waited for, so the next snapshot could be read off the page being replaced.
+   Now one `Browser.settle()` runs after every action.
+3. **`select_option` was being given the JavaScript argument shape.** The list-of-dicts form
+   is JS-only; Python takes `value=` / `label=` / `index=` as separate keyword arguments. So
+   choosing an option by its visible label failed — and label is the durable way to record a
+   dropdown choice, because sites change the hidden value far more often than the words.
+4. **`mouse.wheel` returns before the scroll is applied.** Reading the position straight
+   after a scroll gives the position from *before* it. On an infinite feed that means
+   scrolling and then reading the same rows again, forever. Fixed by waiting two animation
+   frames — which, unlike waiting for the position to change, is still correct at the bottom
+   of a page where scrolling moves nothing.
+5. **The wheel only moves what is under the pointer**, and the pointer starts in the corner.
+   Now centred first.
+
+Also done early, from 2.5b: **the viewport is fixed** at 1280x800. Layout depends on width —
+below a breakpoint the nav collapses into a hamburger button — so a trail recorded at one
+size was unreplayable at another.
+
+**Deliberately not done:** `tap` needs a touch-enabled context, and touch is **off by
+default**. Some sites serve a different mobile layout the moment they detect touch, which
+would change what every other trail sees. It is an explicit `Browser(touch=True)` switch,
+and `tap` without it gives a clear message instead of Playwright's raw `hasTouch` error.
+
+## Next action
+
+**2.5a — the snapshot**, then 2.5b (waiting), 2.5d (reading), 2.5e (locators), 2.5f (events),
+2.5g (the MCP surface), 2.5h (the hard page).
+
+Note the order: the action layer landed first because it is the part that does not depend on
+how elements are found. `actions.py` never resolves an element — it is handed a locator. A
+test (`test_actions_never_search_for_elements`) pins that, so swapping the snapshot
+underneath it cannot quietly turn into a rewrite of the actions.
+
+## Known warnings
+
 **1g — one real, captcha-free website.** Everything is still proven against our own demo
 site, which has clean HTML, stable ids, no JavaScript rendering and no cookie banner. That
 is the biggest remaining gap between "demo" and "product".
-
-## Known warnings
 
 - `StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated`.
   Harmless; only act on it if the test client actually breaks.
@@ -138,6 +206,10 @@ is the biggest remaining gap between "demo" and "product".
 ## Session log
 
 - **2026-08-31** — folder created, plan written. No code.
+- **2026-09-01 (later)** — Phase 2.5c: the 27-action registry, wired into both the cold
+  and warm paths. 46 new tests; 154 engine + 36 MCP pass. Five real bugs found, listed
+  above — the worst being that warm replay silently no-opped unknown actions and could
+  report that as success.
 - **2026-09-01** — Phase 0 passed. Phase 1a (models, store, 12 tests). Phase 1b (demo site).
   Then the whole rest of Phase 1 in one pass: browser, operations, distill, executor, events,
   CLI, and the deletion gate. 72 tests, ruff clean. Two real bugs found by tests: the

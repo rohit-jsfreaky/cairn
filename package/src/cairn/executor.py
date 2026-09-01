@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import actions
 from .browser import Browser
 from .events import (
     DriftDetected,
@@ -44,6 +45,11 @@ from .store import CairnStore
 
 # A step is considered past saving when this share of the trail is already broken.
 STALE_SHARE = 0.5
+
+
+# Actions that put text into a field, so the value may be a secret held on this machine
+# rather than in the trail.
+_TEXT_ENTRY = {"fill", "type"}
 
 
 @dataclass
@@ -281,14 +287,20 @@ class Executor:
         return outcome
 
     def _do(self, step: Step, target, *, domain: str) -> None:
-        if step.action == "click":
-            self.browser.click(target)
-        elif step.action == "fill":
-            self.browser.fill(target, self._value_for(step, domain))
-        elif step.action == "select":
-            self.browser.select(target, step.value or "")
-        elif step.action == "press":
-            self.browser.press(target, step.value or "Enter")
+        """Replay one recorded action.
+
+        The value comes from `_value_for`, so a password field is filled from this machine
+        rather than from memory — memory never held it.
+        """
+        spec = actions.spec_for(step.action)
+        value = self._value_for(step, domain) if spec.name in _TEXT_ENTRY else step.value
+        actions.perform(
+            step.action,
+            page=self.browser.page,
+            target=target,
+            value=value,
+        )
+        self.browser.settle()
 
     def _retire(self, playbook: Playbook, started: float) -> ReplayResult:
         """Throw the trail away, keep what is known about the site, and say so.

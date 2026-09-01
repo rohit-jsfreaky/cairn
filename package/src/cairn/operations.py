@@ -15,21 +15,26 @@ the entire reason a redesign is usually survivable: lose the CSS id, keep the li
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
+from . import actions
 from .browser import Browser, Element, Snapshot, domain_of
 from .events import Emitter, MemoryWrite
 from .models import Playbook, Postcondition, utc_now
 from .store import CairnStore
 
-Action = Literal["goto", "click", "fill", "select", "press", "wait"]
+# Anything in the registry. Kept as a plain str so adding an action never means editing
+# a type in a second file — `actions.spec_for` is what actually rejects a bad name.
+Action = str
 
 # A download event arrives slightly after the click returns. Poll for it rather than
 # guessing one fixed delay: too short is flaky, too long makes every other step slow.
 DOWNLOAD_GRACE_MS = 2000
 DOWNLOAD_POLL_MS = 50
+
+# Actions that put text into a field, and so might be putting a password into one.
+_TEXT_ENTRY = {"fill", "type"}
 
 
 @dataclass
@@ -94,6 +99,7 @@ class Session:
         *,
         ref: str | None = None,
         value: str | None = None,
+        to: str | None = None,
     ) -> dict[str, Any]:
         """Do one thing and report what changed.
 
@@ -108,10 +114,10 @@ class Session:
         self.browser.last_download = None
         self.browser.last_download_path = None
 
-        element = self._perform(action, ref=ref, value=value)
+        element = self._perform(action, ref=ref, value=value, to=to)
 
         # A password is remembered as "there is a password here", never as the password.
-        secret = secret_name(element) if action == "fill" else None
+        secret = secret_name(element) if action in _TEXT_ENTRY else None
 
         # The download event can arrive after the click has already returned, so catch
         # any straggler before recording what happened.
@@ -148,30 +154,35 @@ class Session:
             ),
         }
 
-    def _perform(self, action: Action, *, ref: str | None, value: str | None) -> Element | None:
-        if action == "goto":
-            if not value:
-                raise ActionFailed("goto needs a url")
-            self.browser.goto(value)
-            return None
+    def _perform(
+        self,
+        action: Action,
+        *,
+        ref: str | None,
+        value: str | None,
+        to: str | None = None,
+    ) -> Element | None:
+        """Resolve the element, then hand the doing to the registry.
 
-        if action == "wait":
-            time.sleep(float(value or 0.3))
-            return None
+        Finding things is Cairn's job because a durable descriptor has to be recorded at the
+        same moment. Performing is Playwright's job. This method is the seam between them.
+        """
+        try:
+            spec = actions.spec_for(action)
+        except actions.UnknownAction as unknown:
+            raise ActionFailed(str(unknown)) from unknown
 
-        element = self._element_for(ref)
-        target = self.browser.page.locator(element.css).first
+        element = self._element_for(ref) if spec.needs_target else None
+        target = self.browser.locate(element) if element else None
+        second = self.browser.locate(self._element_for(to)) if spec.needs_second_target else None
 
-        if action == "click":
-            self.browser.click(target)
-        elif action == "fill":
-            self.browser.fill(target, value or "")
-        elif action == "select":
-            self.browser.select(target, value or "")
-        elif action == "press":
-            self.browser.press(target, value or "Enter")
-        else:
-            raise ActionFailed(f"unknown action: {action}")
+        try:
+            actions.perform(
+                action, page=self.browser.page, target=target, value=value, second=second
+            )
+        except actions.ActionNeedsMore as incomplete:
+            raise ActionFailed(str(incomplete)) from incomplete
+
         return element
 
     def _element_for(self, ref: str | None) -> Element:
