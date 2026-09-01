@@ -420,6 +420,8 @@ Scheduled as **Phase 2.5, Sep 2-3**. `MASTER-PLAN.md` carries the day-by-day sch
 - **2.5b — waiting: DONE 2026-09-01.** Five real waits (element, gone, text, url,
   idle) and the `attached` → `visible` fix. The viewport was fixed back in 2.5c.
 - **2.5f — page events: DONE 2026-09-01.** Dialogs, tabs, overlays, file choosers. 34 tests.
+- **2.5g — the MCP surface: DONE 2026-09-01.** `cairn_open` and `cairn_look` are gone.
+  One `cairn_act` and one `cairn_read`, both described from the registries. 20 tests.
 - **2.5a — the snapshot: DONE 2026-09-01.** On Playwright's own engine. The
   hand-written collector is deleted. 36 tests.
 - **2.5e — finding: DONE 2026-09-01.** Nine locator kinds plus `nth` and
@@ -429,7 +431,7 @@ Scheduled as **Phase 2.5, Sep 2-3**. `MASTER-PLAN.md` carries the day-by-day sch
 - **2.5c — the action set: DONE 2026-09-01.** All 21 `Locator` actions plus 6 page-level
   ones, in one registry, wired into both the cold and the warm path. 46 tests. Five real
   bugs found on the way, listed in section 1.
-- Still to do: 2.5g the MCP surface, 2.5h the hard page.
+- Still to do: 2.5h the hard page kept forever.
 
 ### 2.5a: what the snapshot change actually bought
 

@@ -25,7 +25,7 @@ class TestAnUnknownSite:
         result = call(mcp_server, "cairn_run", site=demo_server)
 
         nudge = result["next"]
-        assert "cairn_open" in nudge
+        assert "cairn_act" in nudge
         assert "cairn_save" in nudge
 
     def test_sites_starts_empty(self, mcp_server):
@@ -43,9 +43,15 @@ class TestLearningThroughTheTools:
         assert "one cairn_run call" in saved["message"]
 
     def test_look_returns_controls_not_a_page_dump(self, mcp_server, demo_server):
-        call(mcp_server, "cairn_open", url=f"{demo_server}/")
+        call(
+            mcp_server,
+            "cairn_act",
+            intent="open the billing portal",
+            action="goto",
+            value=f"{demo_server}/",
+        )
 
-        page = call(mcp_server, "cairn_look")
+        page = call(mcp_server, "cairn_read", kind="page")
 
         assert page["ok"] is True
         assert {"Email", "Password", "Sign in"} <= {e["name"] for e in page["elements"]}
@@ -292,7 +298,7 @@ class TestSigningIn:
 class TestToolDescriptions:
     """The descriptions ARE the product here — they are all the host AI gets to choose from.
 
-    A host AI that reaches for cairn_open first would explore a site it already knows,
+    A host AI that reaches for cairn_act first would explore a site it already knows,
     which would quietly destroy the entire value of the project. So the wording that
     prevents that is pinned by tests.
     """
@@ -301,7 +307,7 @@ class TestToolDescriptions:
         instructions = mcp_server.instructions or ""
 
         assert "cairn_run FIRST" in instructions
-        assert instructions.index("cairn_run") < instructions.index("cairn_open")
+        assert instructions.index("cairn_run") < instructions.index("cairn_act")
 
     def test_the_instructions_rule_out_curl_and_friends(self, mcp_server):
         """The real failure seen in testing: a host AI reached for curl and ignored Cairn.
@@ -337,7 +343,8 @@ class TestToolDescriptions:
 
         tools = {t.name: t.description or "" for t in asyncio.run(mcp_server.list_tools())}
 
-        assert "not known" in tools["cairn_open"]
+        assert "not known" in tools["cairn_act"]
+        assert "cairn_run FIRST" in tools["cairn_act"]
         assert "never needs exploring again" in tools["cairn_save"]
 
     def test_cairn_note_says_when_to_call_it(self, mcp_server):
@@ -358,7 +365,13 @@ class TestToolDescriptions:
 
 class TestErrorsAreReadable:
     def test_a_bad_action_returns_a_message_not_a_stack_trace(self, mcp_server, demo_server):
-        call(mcp_server, "cairn_open", url=f"{demo_server}/")
+        call(
+            mcp_server,
+            "cairn_act",
+            intent="open the billing portal",
+            action="goto",
+            value=f"{demo_server}/",
+        )
 
         result = call(mcp_server, "cairn_act", intent="do something odd", action="jump")
 

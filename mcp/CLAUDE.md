@@ -29,9 +29,15 @@ needs real logic, that logic belongs in the package.
 
 | tool | does |
 |---|---|
-| `cairn_look()` | current page as a short clean element list |
-| `cairn_act(target, action, value?)` | click / type / select, records descriptors |
+| `cairn_act(intent, action, ref?, value?, to?)` | ONE tool for all 29 actions, chosen by the `action` argument |
+| `cairn_read(kind, ref?, attribute?)` | `kind="page"` lists the controls; the other 12 kinds read one element |
 | `cairn_save(task)` | distil this session's trace into a playbook, store it |
+
+**One tool per verb, never one tool per action (locked 2026-09-01).** Tool choice is the
+most fragile part of this system — on the first live test a host AI ignored Cairn and used
+`curl`. Twenty-nine tool names to choose between makes that worse, not better. Both tool
+descriptions are GENERATED from `actions.ACTIONS` and `reads.READS`, so an action can never
+exist without being discoverable.
 
 **Warm path (one call, no thinking):**
 

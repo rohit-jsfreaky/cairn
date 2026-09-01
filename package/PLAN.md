@@ -131,7 +131,7 @@ Two decisions were locked by Rohit on 2026-09-01 and are not open again:
   the classic killer of recorded flows.
 - OK when: a confirm dialog and a cookie banner are both handled without a human.
 
-### 2.5g. The MCP surface (Sep 3)
+### 2.5g. The MCP surface (Sep 3) - DONE 2026-09-01
 - Collapse `cairn_open` / `cairn_look` / `cairn_act` into **one `cairn_act`** with an
   `action` argument, plus `cairn_read`.
 - Rewrite descriptions so the action list is discoverable from one tool.

@@ -330,9 +330,37 @@ The existing test `test_look_never_reports_what_is_in_a_password_box` caught thi
 written for the old collector and it held the line through a full rewrite of the layer
 underneath it — the best argument yet for testing behaviour rather than implementation.
 
+### 2.5g is DONE (2026-09-01) — the MCP surface
+
+`cairn_open` and `cairn_look` are gone. Exploring is now two verbs:
+
+- **`cairn_act(intent, action, ref?, value?, to?)`** — all 29 actions, chosen by argument
+- **`cairn_read(kind, ref?, attribute?)`** — `kind="page"` lists the controls (the default,
+  because "what is on this page" is the first thing anyone wants), and the 12 read kinds
+  answer questions about one element
+
+12 tools became 11, but the number that matters is the exploring surface: four tools became
+two. This is Rohit's locked decision from 2026-09-01, and the reason holds up — a host AI
+already ignored Cairn once and reached for `curl`, and 29 tool names would have made that
+worse.
+
+**Both descriptions are generated** from `actions.ACTIONS` and `reads.READS`. A hand-kept
+list drifts the first time an action is added, and an action a host AI cannot see may as
+well not exist. Two tests walk the registries and fail if any name is missing from the
+description.
+
+**One thing the tests caught:** collapsing the tools lost a warning. The old `cairn_open`
+description said it was only for sites that are *not known*; my replacement said "use this
+for any website task" and nothing about calling `cairn_run` first. A host AI reading that
+would explore a site whose task is already learned — which throws away the entire point of
+the project. `test_the_cold_tools_say_they_are_only_for_unknown_sites` failed and the
+wording is now pinned by two assertions.
+
+56 MCP tests, up from 36.
+
 ## Next action
 
-**2.5g — the MCP surface**, then 2.5h the hard page kept forever., then 2.5b (waiting), 2.5d (reading), 2.5e (locators), 2.5f (events),
+**2.5h — the hard page, kept forever.** Then the Phase 2.5 finish line., then 2.5b (waiting), 2.5d (reading), 2.5e (locators), 2.5f (events),
 2.5g (the MCP surface), 2.5h (the hard page).
 
 Note the order: the action layer landed first because it is the part that does not depend on
@@ -352,6 +380,9 @@ is the biggest remaining gap between "demo" and "product".
 ## Session log
 
 - **2026-08-31** — folder created, plan written. No code.
+- **2026-09-01 (later)** — Phase 2.5g: exploring collapsed to cairn_act + cairn_read,
+  descriptions generated from the registries. 20 new MCP tests (56 total). The tests
+  caught that the collapse had dropped the "call cairn_run first" warning.
 - **2026-09-01 (later)** — Phase 2.5a: the snapshot moved onto Playwright's engine, the
   hand-written collector deleted, frames named in locators. 1 element -> 8 on the hard
   page. Found that Playwright's snapshot leaks password values, and stopped it.

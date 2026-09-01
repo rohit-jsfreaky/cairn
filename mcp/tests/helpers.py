@@ -39,9 +39,9 @@ def ref_named(page: dict[str, Any], name: str) -> str:
 
 def teach_the_site(server, base_url: str) -> dict[str, Any]:
     """The cold path, driven through MCP tools exactly as a host AI would drive it."""
-    call(server, "cairn_open", url=f"{base_url}/")
+    call(server, "cairn_act", intent="open the billing portal", action="goto", value=f"{base_url}/")
 
-    page = call(server, "cairn_look")
+    page = call(server, "cairn_read", kind="page")
     call(
         server,
         "cairn_act",
@@ -60,7 +60,7 @@ def teach_the_site(server, base_url: str) -> dict[str, Any]:
     )
     call(server, "cairn_act", intent="sign in", action="click", ref=ref_named(page, "Sign in"))
 
-    page = call(server, "cairn_look")
+    page = call(server, "cairn_read", kind="page")
     call(
         server,
         "cairn_act",
@@ -69,7 +69,7 @@ def teach_the_site(server, base_url: str) -> dict[str, Any]:
         ref=ref_named(page, "September 2026"),
     )
 
-    page = call(server, "cairn_look")
+    page = call(server, "cairn_read", kind="page")
     call(
         server,
         "cairn_act",

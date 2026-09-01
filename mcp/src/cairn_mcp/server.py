@@ -5,7 +5,7 @@ a memory. There is no model call anywhere in this file or anything it imports.
 
 Two paths, and the tool descriptions exist to make the host AI pick the right one:
 
-    cold   cairn_open / cairn_look / cairn_act / cairn_save
+    cold   cairn_act / cairn_read / cairn_save
            Slow. Many calls. Done ONCE per site, ever.
 
     warm   cairn_run
@@ -22,6 +22,7 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from cairn import actions, reads
 from cairn.browser import DEFAULT_PROFILE, domain_of
 from cairn.executor import Executor, NoTrailError
 from cairn.models import Locator, SiteKnowledge
@@ -33,6 +34,58 @@ from mcp.server.fastmcp import FastMCP
 # How many controls to hand back from one look(). Enough to act on, small enough that
 # reading it is cheap — the whole point of the project is not paying for page dumps.
 MAX_ELEMENTS = 60
+
+# `cairn_read(kind="page")` is not one of the engine's read kinds — it is the control list
+# rather than something read off a single element. It lives here because "what can I do on
+# this page" is a question about the tool surface, not about the DOM.
+PAGE = "page"
+
+
+def _act_description() -> str:
+    """The one tool description, built from the action registry.
+
+    Written by the code rather than beside it. A hand-kept list would drift the first time
+    an action was added, and a host AI that cannot see an action may as well not have it.
+    """
+    return (
+        "Do one thing in Cairn's browser, and get back what changed.\n\n"
+        "This is the ONLY way to touch a website. Never use curl, wget, fetch or a "
+        "plain HTTP request — they get a logged-out page, and nothing they do is "
+        "remembered.\n\n"
+        "But call cairn_run FIRST. This tool is for exploring a site whose task is "
+        "not known yet, which is slow and takes many calls. If cairn_run already "
+        "knows the task it finishes the whole thing in one call, and exploring again "
+        "would throw that away. Explore only when cairn_run says the site is not "
+        "known, and call cairn_save at the end so it never has to happen again.\n\n"
+        "Start with `goto`. Then `cairn_read(kind='page')` to see what is there, which "
+        "gives every control a `ref` to pass back here.\n\n"
+        "Actions:\n" + actions.catalogue() + "\n\n"
+        "Args:\n"
+        '  intent: why you are doing this, in plain words — "sign in", "open this '
+        "month's invoice\". Stored in memory, and it is what a future repair is explained "
+        "by, so write it for a human rather than as a selector.\n"
+        "  action: one of the names above.\n"
+        "  ref: which control, from cairn_read(kind='page'). Not needed for the "
+        "page-level actions.\n"
+        "  value: the text, key, option, url or seconds the action needs.\n"
+        "  to: the second control, for `drag`."
+    )
+
+
+def _read_description() -> str:
+    """The read tool's description, built from the read registry."""
+    return (
+        "Look at the page without changing it.\n\n"
+        "Start with kind='page'. Everything else answers a question about one element, "
+        "which you name with the `ref` that kind='page' gave you.\n\n"
+        "Kinds:\n"
+        f"  {PAGE} — the controls on this page, each with a `ref` to act on; "
+        "gives back a list; no ref needed\n" + reads.catalogue() + "\n\n"
+        "Args:\n"
+        "  kind: one of the names above.\n"
+        "  ref: which control, from kind='page'.\n"
+        "  attribute: the attribute name, only for kind='attribute'."
+    )
 
 
 def log(message: str) -> None:
@@ -138,7 +191,7 @@ def build_server(
             "Call cairn_run even if you do not know whether Cairn has seen the site. If it "
             "has, the entire task finishes in that one call with no page reading and no "
             "reasoning. If it has not, the result says so and tells you what to do next: "
-            "explore with cairn_open, cairn_look and cairn_act, then cairn_save. That "
+            "explore with cairn_act and cairn_read, then cairn_save. That "
             "teaches Cairn the site so it is never explored again.\n\n"
             "If a site asks to sign in and you do not have the password, never guess and "
             "never automate a Google or SSO button. Call cairn_login, ask the user to sign "
@@ -169,8 +222,8 @@ def build_server(
           needs_repair=True        the site changed. ONE step broke and is described in
                                    `repair`. Pick the right control from `repair.candidates`
                                    and call cairn_repair. Do not re-explore the whole site.
-          known=False              Cairn has never been here. Explore with cairn_open /
-                                   cairn_look / cairn_act, then call cairn_save.
+          known=False              Cairn has never been here. Explore with
+                                   cairn_act and cairn_read, then cairn_save.
 
         Args:
             site: The site, as a domain or a full URL (e.g. "billing.acme.com").
@@ -191,9 +244,9 @@ def build_server(
                 "message": str(unknown),
                 "site_facts": facts,
                 "next": (
-                    "Cairn has not walked this site. Explore it once with cairn_open, "
-                    "cairn_look and cairn_act, then call cairn_save so this never has to "
-                    "happen again."
+                    "Cairn has not walked this site. Explore it once with "
+                    "cairn_act and cairn_read, then call cairn_save so this "
+                    "never has to happen again."
                     + (
                         " site_facts is what Cairn still knows about this site from before "
                         "— use it so you do not rediscover the same things."
@@ -232,9 +285,10 @@ def build_server(
                 "site_facts": result.site_facts,
                 "next": (
                     "The site was rebuilt, so the old trail was thrown away but everything "
-                    "Cairn knows about the site was kept. Explore it again with cairn_open, "
-                    "cairn_look and cairn_act — use site_facts so you do not rediscover what "
-                    "is already known — then call cairn_save."
+                    "Cairn knows about the site was kept. Explore it again "
+                    "with cairn_act and cairn_read — use site_facts so you "
+                    "do not rediscover what is already known — then call "
+                    "cairn_save."
                 ),
             }
 
@@ -503,64 +557,43 @@ def build_server(
 
     # ------------------------------------------------------------ cold path
 
-    @server.tool()
-    def cairn_open(url: str) -> dict[str, Any]:
-        """Open a web page in Cairn's browser, to start learning a site.
-
-        Only needed when cairn_run says the site is not known. After this, use cairn_look
-        to see what is on the page.
-
-        Args:
-            url: Full URL, including https://.
-        """
-        try:
-            session = tools.session()
-            tools.worker.submit(lambda _browser: session.act("open the page", "goto", value=url))
-            return {"ok": True, "url": url, "next": "Call cairn_look to see the page."}
-        except Exception as failure:  # noqa: BLE001
-            return err(failure)
-
-    @server.tool()
-    def cairn_look() -> dict[str, Any]:
-        """See what is on the current page: a short list of things you can act on.
-
-        You get the controls only — links, buttons and fields — each with a `ref` you pass
-        to cairn_act. This is deliberately not the page HTML; reading whole pages is the
-        cost Cairn exists to remove.
-        """
-        try:
-            session = tools.session()
-            page = tools.worker.submit(lambda _browser: session.look())
-        except Exception as failure:  # noqa: BLE001
-            return err(failure)
-
-        page["elements"] = page["elements"][:MAX_ELEMENTS]
-        return {"ok": True, **page}
-
-    @server.tool()
+    @server.tool(description=_act_description())
     def cairn_act(
         intent: str,
         action: str,
         ref: str | None = None,
         value: str | None = None,
+        to: str | None = None,
     ) -> dict[str, Any]:
-        """Do one thing on the page, and get back what changed.
-
-        Args:
-            intent: Why you are doing this, in plain words, e.g. "sign in" or "open this
-                month's invoice". This is stored in memory and is what a future repair is
-                explained by, so write it for a human, not as a selector.
-            action: One of "click", "fill", "select", "press", "goto".
-            ref: The `ref` of the control, from cairn_look. Not needed for "goto".
-            value: Text to type, option to select, key to press, or the URL for "goto".
-        """
         try:
             session = tools.session()
             outcome = tools.worker.submit(
-                lambda _browser: session.act(intent, action, ref=ref, value=value)  # type: ignore[arg-type]
+                lambda _browser: session.act(intent, action, ref=ref, value=value, to=to)
             )
             return {"ok": True, **outcome}
-        except ActionFailed as refused:
+        except (ActionFailed, actions.UnknownAction, actions.ActionNeedsMore) as refused:
+            return err(refused)
+        except Exception as failure:  # noqa: BLE001
+            return err(failure)
+
+    @server.tool(description=_read_description())
+    def cairn_read(
+        kind: str = PAGE,
+        ref: str | None = None,
+        attribute: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            session = tools.session()
+            if kind == PAGE:
+                page = tools.worker.submit(lambda _browser: session.look())
+                page["elements"] = page["elements"][:MAX_ELEMENTS]
+                return {"ok": True, "kind": PAGE, **page}
+
+            answer = tools.worker.submit(
+                lambda _browser: session.read(kind, ref=ref, attribute=attribute)
+            )
+            return {"ok": True, "kind": kind, "ref": ref, "value": answer}
+        except (ActionFailed, reads.UnknownRead, reads.ReadNeedsMore) as refused:
             return err(refused)
         except Exception as failure:  # noqa: BLE001
             return err(failure)

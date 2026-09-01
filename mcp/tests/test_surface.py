@@ -1,0 +1,214 @@
+"""The tool surface itself.
+
+Exploring used to be four tools — open, look, act, save. It is now two verbs, `cairn_act`
+and `cairn_read`, plus `cairn_save` at the end. Tool choice is the most fragile part of
+this whole system: on the first live test a host AI ignored Cairn completely and reached
+for `curl`. Twenty-nine separate action tools would have made that worse, not better.
+
+So the descriptions are generated from the registries rather than written beside them. A
+hand-kept list drifts the first time an action is added, and an action a host AI cannot see
+may as well not exist.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+from cairn import actions, reads
+
+from helpers import call, ref_named
+
+EXPLORING_TOOLS = {"cairn_act", "cairn_read", "cairn_save"}
+
+
+@pytest.fixture
+def described(mcp_server) -> dict[str, str]:
+    return {t.name: t.description or "" for t in asyncio.run(mcp_server.list_tools())}
+
+
+@pytest.fixture
+def on_the_page(mcp_server, demo_server):
+    """The demo site's front page, open and looked at."""
+    call(
+        mcp_server,
+        "cairn_act",
+        intent="open the billing portal",
+        action="goto",
+        value=f"{demo_server}/",
+    )
+    return call(mcp_server, "cairn_read", kind="page")
+
+
+# ----------------------------------------------------------- one tool each
+
+
+def test_the_old_tools_are_gone(described: dict[str, str]) -> None:
+    assert "cairn_open" not in described
+    assert "cairn_look" not in described
+
+
+def test_exploring_is_two_verbs_plus_save(described: dict[str, str]) -> None:
+    assert set(described) >= EXPLORING_TOOLS
+
+
+def test_every_action_is_named_in_one_description(described: dict[str, str]) -> None:
+    """The whole list has to be reachable from the one tool that performs it. Generated
+    from the registry, so adding an action can never leave it undiscoverable."""
+    for name in actions.ACTIONS:
+        assert name in described["cairn_act"], f"{name} is not in the tool description"
+
+
+def test_every_read_is_named_in_one_description(described: dict[str, str]) -> None:
+    for name in reads.READS:
+        assert name in described["cairn_read"], f"{name} is not in the tool description"
+    assert "page" in described["cairn_read"]
+
+
+def test_the_act_description_still_rules_out_curl(described: dict[str, str]) -> None:
+    """The real failure seen in testing. A description that only ranks Cairn's own tools
+    against each other loses to the shell, because the shell is always right there."""
+    text = described["cairn_act"]
+    for rival in ("curl", "wget", "fetch"):
+        assert rival in text
+
+
+def test_the_act_description_still_ranks_cairn_run_first(described: dict[str, str]) -> None:
+    """Exploring a site whose task is already known throws away the entire point."""
+    assert "cairn_run FIRST" in described["cairn_act"]
+    assert "not known" in described["cairn_act"]
+
+
+# ------------------------------------------------------------- acting
+
+
+def test_goto_is_an_action_now(mcp_server, demo_server) -> None:
+    result = call(
+        mcp_server,
+        "cairn_act",
+        intent="open the billing portal",
+        action="goto",
+        value=f"{demo_server}/",
+    )
+    assert result["ok"]
+
+
+def test_fill_and_click(mcp_server, on_the_page) -> None:
+    filled = call(
+        mcp_server,
+        "cairn_act",
+        intent="type the account email",
+        action="fill",
+        ref=ref_named(on_the_page, "Email"),
+        value="finance@acme.com",
+    )
+    assert filled["ok"]
+
+
+def test_an_action_that_does_not_exist_says_what_does(mcp_server, on_the_page) -> None:
+    result = call(mcp_server, "cairn_act", intent="teleport", action="teleport")
+    assert not result["ok"]
+    assert "click" in result["error"]
+
+
+def test_an_action_missing_its_value_says_what_is_needed(mcp_server, on_the_page) -> None:
+    result = call(
+        mcp_server,
+        "cairn_act",
+        intent="type the email",
+        action="fill",
+        ref=ref_named(on_the_page, "Email"),
+    )
+    assert not result["ok"]
+    assert "value" in result["error"]
+
+
+def test_wait_for_reaches_the_engine(mcp_server, on_the_page) -> None:
+    result = call(mcp_server, "cairn_act", intent="let it settle", action="wait_for", value="idle")
+    assert result["ok"]
+
+
+def test_new_tab_and_switch_tab_reach_the_engine(mcp_server, on_the_page) -> None:
+    assert call(mcp_server, "cairn_act", intent="open a tab", action="new_tab")["ok"]
+    assert call(
+        mcp_server,
+        "cairn_act",
+        intent="go back to the first tab",
+        action="switch_tab",
+        value="main",
+    )["ok"]
+
+
+# ------------------------------------------------------------- reading
+
+
+def test_read_page_lists_the_controls(on_the_page) -> None:
+    assert on_the_page["ok"]
+    assert on_the_page["kind"] == "page"
+    assert any(element["name"] == "Email" for element in on_the_page["elements"])
+
+
+def test_read_page_is_the_default_kind(mcp_server, demo_server) -> None:
+    """The first thing anyone wants is "what is on this page", so it costs no argument."""
+    call(
+        mcp_server,
+        "cairn_act",
+        intent="open the billing portal",
+        action="goto",
+        value=f"{demo_server}/",
+    )
+    assert call(mcp_server, "cairn_read")["kind"] == "page"
+
+
+def test_read_a_value_off_one_element(mcp_server, on_the_page) -> None:
+    email = ref_named(on_the_page, "Email")
+    call(
+        mcp_server,
+        "cairn_act",
+        intent="type the account email",
+        action="fill",
+        ref=email,
+        value="finance@acme.com",
+    )
+    result = call(mcp_server, "cairn_read", kind="value", ref=email)
+    assert result["ok"]
+    assert result["value"] == "finance@acme.com"
+
+
+def test_read_the_url(mcp_server, on_the_page, demo_server) -> None:
+    result = call(mcp_server, "cairn_read", kind="url")
+    assert result["ok"]
+    assert demo_server in result["value"]
+
+
+def test_read_counts_things(mcp_server, on_the_page) -> None:
+    result = call(mcp_server, "cairn_read", kind="count", ref=ref_named(on_the_page, "Email"))
+    assert result["ok"]
+    assert result["value"] == 1
+
+
+def test_a_read_that_does_not_exist_says_what_does(mcp_server, on_the_page) -> None:
+    result = call(mcp_server, "cairn_read", kind="vibes")
+    assert not result["ok"]
+    assert "text" in result["error"]
+
+
+def test_a_read_missing_its_element_says_so(mcp_server, on_the_page) -> None:
+    result = call(mcp_server, "cairn_read", kind="text")
+    assert not result["ok"]
+    assert "ref" in result["error"].lower()
+
+
+def test_reading_never_reports_what_is_in_a_password_box(mcp_server, on_the_page) -> None:
+    """Playwright's own snapshot prints field contents in plain text, passwords included.
+    Nothing that leaves this server may carry one."""
+    call(
+        mcp_server,
+        "cairn_act",
+        intent="type the password",
+        action="fill",
+        ref=ref_named(on_the_page, "Password"),
+        value="hunter2",
+    )
+    page = call(mcp_server, "cairn_read", kind="page")
+    assert "hunter2" not in str(page)
