@@ -1,0 +1,209 @@
+"""A tiny billing portal, so Cairn has a site it is allowed to break.
+
+Four pages, the shape of the boring work Cairn is for:
+
+    /  (login)  ->  /invoices  ->  /invoices/{id}  ->  download
+
+Add `?variant=b` to any URL and the site "redesigns itself". Variant B changes exactly
+ONE thing that matters: the download control is renamed, given a different id, and moved
+to the other side of the page. That is deliberate — a repair demo is only convincing if
+the trail breaks in one place and Cairn fixes that one place, rather than the whole
+playbook going stale.
+
+What stays identical in both variants, on purpose:
+  - the accessible role of every control
+  - the URL structure
+  - the login flow
+So a locator that matched on CSS breaks, and a locator that matched on role survives.
+That contrast is the whole point of storing ranked locators instead of a recording.
+
+Run it:
+
+    python package/tests/demo_site/app.py
+
+Then open http://127.0.0.1:8787  and  http://127.0.0.1:8787/?variant=b
+"""
+
+from __future__ import annotations
+
+from fastapi import FastAPI, Form, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+
+app = FastAPI(title="Acme Billing (Cairn demo site)", docs_url=None, redoc_url=None)
+
+INVOICES = [
+    {"id": "2026-09", "month": "September 2026", "amount": "48,200", "state": "due"},
+    {"id": "2026-08", "month": "August 2026", "amount": "46,900", "state": "paid"},
+    {"id": "2026-07", "month": "July 2026", "amount": "51,400", "state": "paid"},
+]
+
+STYLE = """
+  * { box-sizing: border-box }
+  body { font: 15px/1.5 system-ui, sans-serif; color: #0a0b0c; background: #fafafa;
+         margin: 0; padding: 48px 24px; }
+  main { max-width: 720px; margin: 0 auto; background: #fff; border: 1px solid #e5e5e5;
+         border-radius: 14px; padding: 32px; }
+  h1 { font-size: 22px; margin: 0 0 4px }
+  p.sub { color: #737373; margin: 0 0 28px }
+  nav { display: flex; gap: 18px; margin-bottom: 28px; padding-bottom: 16px;
+        border-bottom: 1px solid #eee }
+  nav a { color: #737373; text-decoration: none }
+  nav a.active { color: #0a0b0c; font-weight: 600 }
+  ul.rows { list-style: none; padding: 0; margin: 0 }
+  li.row { display: flex; align-items: center; justify-content: space-between;
+           padding: 14px 0; border-bottom: 1px solid #f0f0f0 }
+  .amount { color: #737373; font-variant-numeric: tabular-nums }
+  .tag { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: #f0f0f0;
+         color: #737373 }
+  .tag.due { background: #f6ece2; color: #a46a3c }
+  label { display: block; margin: 14px 0 6px; color: #737373; font-size: 13px }
+  input { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px;
+          font-size: 15px }
+  button, .btn { display: inline-block; margin-top: 20px; padding: 10px 18px;
+                 border: 0; border-radius: 8px; background: #0a0b0c; color: #fff;
+                 font-size: 14px; cursor: pointer; text-decoration: none }
+  .toolbar { display: flex; margin-top: 28px }
+  .toolbar.right { justify-content: flex-end }
+  .ok { margin-top: 20px; padding: 12px 14px; border-radius: 8px; background: #eef6f1;
+        color: #2e7d55 }
+"""
+
+
+def variant_of(request: Request, variant: str | None) -> str:
+    """Variant sticks across links so a whole run stays in one version of the site."""
+    if variant in ("a", "b"):
+        return variant
+    return request.query_params.get("variant", "a")
+
+
+def link(path: str, variant: str) -> str:
+    return f"{path}?variant=b" if variant == "b" else path
+
+
+def page(title: str, body: str, *, variant: str, nav: bool = True) -> HTMLResponse:
+    # Variant B renames the section in the nav as well, so a text locator on the nav
+    # has to cope too. The href does not change.
+    invoices_label = "Billing" if variant == "b" else "Invoices"
+    nav_html = (
+        f"""<nav>
+              <a href="{link('/invoices', variant)}" class="active">{invoices_label}</a>
+              <a href="{link('/invoices', variant)}">Payments</a>
+              <a href="{link('/invoices', variant)}">Settings</a>
+            </nav>"""
+        if nav
+        else ""
+    )
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>{title} · Acme Billing</title><style>{STYLE}</style></head>
+<body><main>{nav_html}{body}</main></body></html>"""
+    )
+
+
+@app.get("/", response_class=HTMLResponse)
+def login_page(request: Request, variant: str | None = Query(None)) -> HTMLResponse:
+    v = variant_of(request, variant)
+    return page(
+        "Sign in",
+        f"""
+        <h1>Sign in</h1>
+        <p class="sub">Acme Billing</p>
+        <form method="post" action="{link('/login', v)}">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" value="finance@acme.com" required>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" value="hunter2" required>
+          <button type="submit">Sign in</button>
+        </form>
+        """,
+        variant=v,
+        nav=False,
+    )
+
+
+@app.post("/login")
+def login(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    variant: str | None = Query(None),
+) -> RedirectResponse:
+    """Any credentials work. This is a demo site, not a security exercise."""
+    del email, password
+    return RedirectResponse(link("/invoices", variant_of(request, variant)), status_code=303)
+
+
+@app.get("/invoices", response_class=HTMLResponse)
+def invoice_list(request: Request, variant: str | None = Query(None)) -> HTMLResponse:
+    v = variant_of(request, variant)
+    rows = "".join(
+        f"""<li class="row">
+              <a href="{link('/invoices/' + inv['id'], v)}">{inv['month']}</a>
+              <span>
+                <span class="amount">&#8377; {inv['amount']}</span>
+                <span class="tag {inv['state']}">{inv['state']}</span>
+              </span>
+            </li>"""
+        for inv in INVOICES
+    )
+    return page(
+        "Invoices",
+        f"""<h1>{'Billing' if v == 'b' else 'Invoices'}</h1>
+            <p class="sub">Three most recent statements</p>
+            <ul class="rows">{rows}</ul>""",
+        variant=v,
+    )
+
+
+@app.get("/invoices/{invoice_id}", response_class=HTMLResponse)
+def invoice_detail(
+    request: Request, invoice_id: str, variant: str | None = Query(None)
+) -> HTMLResponse:
+    v = variant_of(request, variant)
+    invoice = next((i for i in INVOICES if i["id"] == invoice_id), None)
+    if invoice is None:
+        return page("Not found", "<h1>No such invoice</h1>", variant=v)
+
+    # THE ONE THING THAT MOVES.
+    # Variant A: id="download-btn", label "Download", left aligned.
+    # Variant B: id="get-pdf",     label "Get PDF",  right aligned.
+    # The role stays "link" in both, and the href never changes — so a role or href
+    # locator survives the redesign and only a css/text locator misses.
+    href = link(f"/invoices/{invoice_id}/file", v)
+    if v == "b":
+        action = f"""<div class="toolbar right">
+                       <a class="btn" id="get-pdf" href="{href}">Get PDF</a>
+                     </div>"""
+    else:
+        action = f"""<div class="toolbar">
+                       <a class="btn" id="download-btn" href="{href}">Download</a>
+                     </div>"""
+
+    return page(
+        invoice["month"],
+        f"""<h1>{invoice['month']}</h1>
+            <p class="sub">Invoice {invoice['id']} &middot; &#8377; {invoice['amount']}</p>
+            {action}""",
+        variant=v,
+    )
+
+
+@app.get("/invoices/{invoice_id}/file")
+def invoice_file(invoice_id: str) -> Response:
+    """A real download, so a 'download happened' postcondition has something to check."""
+    body = f"ACME BILLING\nInvoice {invoice_id}\nThis is a demo file.\n".encode()
+    return Response(
+        content=body,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="acme-{invoice_id}.pdf"'},
+    )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    print("Acme Billing demo site")
+    print("  variant A  http://127.0.0.1:8787/")
+    print("  variant B  http://127.0.0.1:8787/?variant=b")
+    uvicorn.run(app, host="127.0.0.1", port=8787, log_level="warning")

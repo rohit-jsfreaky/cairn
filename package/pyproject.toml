@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "fastapi>=0.141.1", "uvicorn>=0.52.4"]
 
 [project.scripts]
 cairn = "cairn.cli:main"
