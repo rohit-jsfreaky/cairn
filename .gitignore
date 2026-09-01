@@ -1,0 +1,75 @@
+# --- Python (package/, mcp/, backend/) ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+.python-version
+
+# test + type + lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Node / Next.js (frontend/) ---
+node_modules/
+.next/
+out/
+.vercel/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# --- Secrets ---
+# Cairn needs NO API key to run. If one ever appears (OpenRouter, x402), it stays out of git.
+.env
+.env.*
+!.env.example
+*.pem
+
+# --- Cairn runtime state ---
+# Memory lives in ~/.sibyl-memory by default. If it is ever written next to the
+# code, it must never be committed: the deletion-gate test needs a real wipe.
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+.cairn/
+runs/
+
+# --- Browser automation output ---
+.playwright-mcp/
+playwright-report/
+test-results/
+blob-report/
+.cache/ms-playwright/
+
+# --- Agent tooling ---
+# Third-party skills are cloned in, not authored here. Reinstall with:
+#   git clone --depth 1 https://github.com/greensock/gsap-skills
+#   cp -r gsap-skills/skills/* .claude/skills/
+.claude/skills/
+.claude/settings.local.json
+
+# --- Scratch ---
+*.b64.txt
+scratch/
+tmp/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
