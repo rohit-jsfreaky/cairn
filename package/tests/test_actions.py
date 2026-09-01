@@ -253,9 +253,7 @@ def test_select_by_index(lab: Browser) -> None:
 
 def test_select_several(lab: Browser) -> None:
     do(lab, "select", "#many", value="a,c")
-    chosen = lab.page.eval_on_selector(
-        "#many", "el => [...el.selectedOptions].map(o => o.value)"
-    )
+    chosen = lab.page.eval_on_selector("#many", "el => [...el.selectedOptions].map(o => o.value)")
     assert chosen == ["a", "c"]
 
 
@@ -335,9 +333,7 @@ def test_focus_and_blur(lab: Browser) -> None:
 
 def test_drag(lab: Browser) -> None:
     target = lab.page.locator("#zone").first
-    actions.perform(
-        "drag", page=lab.page, target=lab.page.locator("#drag").first, second=target
-    )
+    actions.perform("drag", page=lab.page, target=lab.page.locator("#drag").first, second=target)
     assert log_says(lab) == "dropped"
 
 
@@ -396,8 +392,11 @@ def test_settle_survives_a_navigation(lab: Browser, demo_server: str) -> None:
 def test_actions_never_search_for_elements() -> None:
     """`actions.py` performs; it must never locate. If it starts calling `get_by_*` or
     `page.locator`, the seam that lets locators become frame-aware has been broken."""
-    source = (actions.__file__ and open(actions.__file__, encoding="utf-8").read()) or ""
-    body = source.split("# ------------------------------------------------------------------ performing")[1]
+    with open(actions.__file__, encoding="utf-8") as handle:
+        source = handle.read()
+    body = source.split(
+        "# ------------------------------------------------------------------ performing"
+    )[1]
     for forbidden in ("page.locator(", "get_by_role(", "get_by_text(", "query_selector("):
         assert forbidden not in body, f"actions.py should not resolve elements: {forbidden}"
 

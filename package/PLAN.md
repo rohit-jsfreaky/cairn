@@ -107,7 +107,7 @@ Two decisions were locked by Rohit on 2026-09-01 and are not open again:
 - Each action records what replay needs, and gets a sensible default postcondition.
 - OK when: every action can be recorded, replayed and verified on the demo site.
 
-### 2.5d. Reading (Sep 3)
+### 2.5d. Reading (Sep 3) - DONE 2026-09-01
 - `read(kind, target)`: text | all_text | value | checked | visible | enabled | attribute |
   count. Without this Cairn can click but never read, so "check my dashboard numbers" is
   impossible - which is half of why anyone would want this.

@@ -18,7 +18,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import actions
+from playwright.sync_api import Error as PlaywrightError
+
+from . import actions, reads
 from .browser import Browser, Element, Snapshot, domain_of
 from .events import Emitter, MemoryWrite
 from .models import Playbook, Postcondition, utc_now
@@ -183,6 +185,9 @@ class Session:
         except actions.ActionNeedsMore as incomplete:
             raise ActionFailed(str(incomplete)) from incomplete
 
+        # Every action, not a chosen few. A download event can arrive after the click has
+        # already returned, and a select can navigate just as a click can.
+        self.browser.settle()
         return element
 
     def _element_for(self, ref: str | None) -> Element:
@@ -195,13 +200,47 @@ class Session:
             raise ActionFailed(f"no element {ref} on this page — call look() again")
         return element
 
+    # ------------------------------------------------------------------ read
+
+    def read(
+        self,
+        kind: str,
+        *,
+        ref: str | None = None,
+        attribute: str | None = None,
+    ) -> Any:
+        """Look at the page without changing it.
+
+        This is the half of the job that is not clicking. "How many unpaid invoices are
+        there", "did the total change", "is the submit button live yet" — all of it is a
+        read, and none of it was possible before.
+
+        Nothing is written to the trace: a read has no effect, so replaying one would
+        achieve nothing. What a read is *for* is choosing the postcondition that does get
+        stored.
+        """
+        self.tool_calls += 1
+        try:
+            spec = reads.spec_for(kind)
+        except reads.UnknownRead as unknown:
+            raise ActionFailed(str(unknown)) from unknown
+
+        target = self.browser.locate(self._element_for(ref)) if spec.needs_target else None
+        try:
+            return reads.read(kind, page=self.browser.page, target=target, attribute=attribute)
+        except reads.ReadNeedsMore as incomplete:
+            raise ActionFailed(str(incomplete)) from incomplete
+
     # ---------------------------------------------------------------- verify
 
-    def verify(self, kind: str, value: str) -> bool:
+    def verify(self, kind: str, value: str, *, target: str | None = None) -> bool:
         """Check a postcondition. Same code the warm path uses, so what we record is
         exactly what will later be enforced."""
         self.tool_calls += 1
-        return check_postcondition(self.browser, Postcondition(kind=kind, value=value))  # type: ignore[arg-type]
+        return check_postcondition(
+            self.browser,
+            Postcondition(kind=kind, value=value, target=target),  # type: ignore[arg-type]
+        )
 
     # ------------------------------------------------------------------ save
 
@@ -242,8 +281,11 @@ def secret_name(element: Element | None) -> str | None:
 def check_postcondition(browser: Browser, expected: Postcondition) -> bool:
     """Did the page actually end up where it should have?
 
-    This is the line between Cairn and a macro recorder, so it lives in one place and
-    both the cold and warm paths call it.
+    This is the line between Cairn and a macro recorder — a recorder clicks and hopes.
+    It lives in one place and both the cold and the warm path call it.
+
+    Everything that looks at an element goes through `reads.read`, so a check can never
+    disagree with the read an AI would have done by hand.
     """
     if expected.kind == "url_contains":
         return expected.value in browser.page.url
@@ -252,7 +294,19 @@ def check_postcondition(browser: Browser, expected: Postcondition) -> bool:
     if expected.kind == "text_gone":
         return expected.value.lower() not in browser.text().lower()
     if expected.kind == "element_present":
-        return browser.page.locator(expected.value).count() > 0
+        return _count_matching(browser, expected) > 0
+    if expected.kind == "element_gone":
+        return _count_matching(browser, expected) == 0
+    if expected.kind == "count_is":
+        return _count_matching(browser, expected) == _as_number(expected.value)
+    if expected.kind == "value_is":
+        return _read_for(browser, expected, "value") == expected.value
+    if expected.kind == "checked_is":
+        return _read_for(browser, expected, "checked") is _as_bool(expected.value)
+    if expected.kind == "attribute_is":
+        name, _, wanted = expected.value.partition("=")
+        found = _read_for(browser, expected, "attribute", attribute=name.strip())
+        return (found or "") == wanted
     if expected.kind == "download":
         # Wait only as long as it actually takes. Returns the moment the file arrives.
         waited = 0
@@ -262,6 +316,48 @@ def check_postcondition(browser: Browser, expected: Postcondition) -> bool:
         browser.flush_downloads()
         return browser.last_download is not None
     return False
+
+
+def _selector_of(expected: Postcondition) -> str:
+    """Which element the check is about.
+
+    The older kinds put their selector in `value` because they had nothing to compare it
+    against. The newer ones need `value` for the expected answer, so they use `target`.
+    Reading either way keeps every playbook already in memory loadable.
+    """
+    return expected.target or expected.value
+
+
+def _count_matching(browser: Browser, expected: Postcondition) -> int:
+    return reads.read(
+        "count", page=browser.page, target=browser.page.locator(_selector_of(expected))
+    )
+
+
+def _read_for(
+    browser: Browser, expected: Postcondition, kind: str, *, attribute: str | None = None
+) -> Any:
+    """Read one thing, treating a missing element as a failed check rather than a crash.
+
+    A postcondition asks a yes/no question. If the element it names is gone, the honest
+    answer is no — and that is drift, which the caller handles. It is not an error.
+    """
+    target = browser.page.locator(_selector_of(expected)).first
+    try:
+        return reads.read(kind, page=browser.page, target=target, attribute=attribute)
+    except PlaywrightError:
+        return None
+
+
+def _as_number(value: str) -> int:
+    try:
+        return int(value.strip())
+    except ValueError:
+        return -1
+
+
+def _as_bool(value: str) -> bool:
+    return value.strip().lower() in {"true", "1", "yes", "on", "checked"}
 
 
 def _first_new_line(before: str, after: str) -> str:

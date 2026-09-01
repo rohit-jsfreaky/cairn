@@ -41,7 +41,7 @@ Measured 2026-09-01, before Phase 2.5 began, and updated as each step lands.
 | | Playwright offers | Cairn had | Cairn has now |
 |---|---|---|---|
 | ways to act on an element | 21 | 4 | **21, plus 6 page-level** ✅ 2.5c |
-| ways to read from a page | 18 | 1 (page text) | 1 — still to do (2.5d) |
+| ways to read from a page | 18 | 1 (page text) | **12, plus 5 new postcondition kinds** ✅ 2.5d |
 | page-level events (dialogs, popups, uploads) | yes | none | none — still to do (2.5f) |
 | frames / shadow DOM | yes | none | none — still to do (2.5a) |
 
@@ -119,10 +119,13 @@ the code:
    forever.
 5. **The wheel only moves what is under the pointer**, which starts in the corner.
 
-## 2. Reading from a page — `Locator` (18 methods)
+## 2. Reading from a page — `Locator` (18 methods) — ✅ BUILT (2.5d, 2026-09-01)
 
-Cairn can currently read page text and nothing else. This is why "check my dashboard
-numbers" is impossible today, and it is also what postconditions are built from.
+Cairn could read page text and nothing else. That is why "check my dashboard numbers" was
+impossible, and reading is also what postconditions are built from.
+
+Now in `src/cairn/reads.py`, 12 kinds, tested in `tests/test_reads.py`. Same registry shape
+as `actions.py`, and the same rule: nothing in it resolves an element.
 
 | Playwright | Cairn | in? | why |
 |---|---|---|---|
@@ -130,15 +133,48 @@ numbers" is impossible today, and it is also what postconditions are built from.
 | `input_value` | `read(value)` | **yes** | also lets us verify a `fill` actually landed |
 | `is_checked` | `read(checked)` | **yes** | verifying a `check` |
 | `is_visible` / `is_hidden` | `read(visible)` | **yes** | "the dialog closed" |
-| `is_enabled` / `is_disabled` / `is_editable` | `read(enabled)` | **yes** | "the submit button became clickable" |
+| `is_enabled` / `is_disabled` | `read(enabled)` | **yes** | "the submit button became clickable" |
+| `is_editable` | `read(editable)` | **yes** | split out, not folded into `enabled` as this table first said. A read-only field is **enabled but not editable** — calling it enabled would send a caller into a retry loop that can never succeed |
 | `get_attribute` | `read(attribute)` | **yes** | href, aria-expanded, data attributes |
 | `count` | `read(count)` | **yes** | "there are 3 unpaid invoices" |
 | `all_text_contents` / `all_inner_texts` | `read(all_text)` | **yes** | reading a table or a list in one go |
-| `aria_snapshot` | the snapshot itself | **yes** | replaces our hand-written collector |
+| `aria_snapshot` | the snapshot itself | **yes** | replaces our hand-written collector. Still to do — this is step 2.5a |
 | `bounding_box` | — | **no** | pixel geometry is not something to remember |
 | `screenshot` | out of band | **later** | useful for the dashboard, never part of a trail |
 | `inner_html` | — | **no** | raw markup is the cost we exist to remove |
 | `evaluate` / `evaluate_all` / `element_handle` | — | **no** | see the rule |
+
+### Also built, beyond this table: 3 page-level reads
+
+| Cairn | why |
+|---|---|
+| `read(url)` | which page am I on |
+| `read(title)` | the page title, a cheap way to confirm where you landed |
+| `read(page_text)` | the whole page as text. A last resort, and its own description says to prefer `text` on one element |
+
+### The 5 new postcondition kinds this unlocked
+
+A postcondition is a read plus an expected answer, so `check_postcondition` now calls
+`reads.read` instead of talking to Playwright itself. One reading path, so a check can
+never disagree with the read an AI would have done by hand.
+
+| kind | proves |
+|---|---|
+| `value_is` | a `fill` actually landed, instead of silently doing nothing |
+| `checked_is` | a `check` actually ticked the box |
+| `count_is` | "there are still 3 rows" |
+| `attribute_is` | href, aria-expanded, data attributes |
+| `element_gone` | the dialog closed, the spinner finished |
+
+`Postcondition` gained an optional `target`. The older kinds keep their selector in
+`value`; the new ones need `value` for the expected answer, so they put the selector in
+`target`. Old playbooks already in memory still load — there is a test for exactly that.
+
+**One bug found here:** adding `settle()` to the warm path but not the cold path meant
+downloads were flushed *before* the download event arrived, so the file was never written.
+The existing download test caught it. That test was itself written after an earlier miss,
+where it only checked the download *event* and passed for a week while the file was being
+thrown away.
 
 ## 3. Finding an element — `Locator` (finding methods)
 
@@ -341,8 +377,10 @@ Scheduled as **Phase 2.5, Sep 2-3**. `MASTER-PLAN.md` carries the day-by-day sch
 
 ## Progress
 
+- **2.5d — reading: DONE 2026-09-01.** 12 read kinds and 5 new postcondition kinds,
+  built on one shared reading path. 40 tests.
 - **2.5c — the action set: DONE 2026-09-01.** All 21 `Locator` actions plus 6 page-level
   ones, in one registry, wired into both the cold and the warm path. 46 tests. Five real
   bugs found on the way, listed in section 1.
-- Still to do: 2.5a snapshot, 2.5b waiting, 2.5d reading, 2.5e locators, 2.5f page events,
-  2.5g the MCP surface, 2.5h the hard page.
+- Still to do: 2.5a snapshot, 2.5b waiting, 2.5e locators, 2.5f page events, 2.5g the MCP
+  surface, 2.5h the hard page.

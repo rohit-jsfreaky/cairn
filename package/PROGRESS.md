@@ -184,6 +184,34 @@ default**. Some sites serve a different mobile layout the moment they detect tou
 would change what every other trail sees. It is an explicit `Browser(touch=True)` switch,
 and `tap` without it gives a clear message instead of Playwright's raw `hasTouch` error.
 
+### 2.5d is DONE (2026-09-01) — reading
+
+`reads.py`, same registry shape as `actions.py`. **12 read kinds**: text, all_text, value,
+checked, visible, enabled, editable, attribute, count, plus url, title and page_text.
+40 tests in `tests/test_reads.py`.
+
+Cairn could previously read page text and nothing else, so "check my dashboard numbers"
+was impossible — half the reason anyone would want this tool.
+
+**5 new postcondition kinds**: `value_is`, `checked_is`, `count_is`, `attribute_is`,
+`element_gone`. `check_postcondition` now calls `reads.read` rather than talking to
+Playwright itself, so a check and the read behind it share one code path and cannot
+disagree. `Postcondition` gained an optional `target`; old playbooks still load, pinned by
+a test.
+
+Two judgement calls worth recording:
+
+- **`editable` is its own read, not folded into `enabled`** as BROWSING.md first said. A
+  read-only field is enabled but cannot be typed into. Reporting it as enabled would send a
+  caller into a retry loop that can never succeed.
+- **A read of something missing answers rather than crashing** where an honest empty answer
+  exists: not visible, not ticked, count zero. A postcondition on a missing element fails,
+  which is drift the caller repairs — not an error.
+
+**One regression, caught by an existing test:** I added `settle()` to the warm path and
+forgot the cold path, so downloads were flushed before the download event arrived and the
+file was never written to disk. Fixed by settling after every action on both paths.
+
 ## Next action
 
 **2.5a — the snapshot**, then 2.5b (waiting), 2.5d (reading), 2.5e (locators), 2.5f (events),
@@ -206,6 +234,9 @@ is the biggest remaining gap between "demo" and "product".
 ## Session log
 
 - **2026-08-31** — folder created, plan written. No code.
+- **2026-09-01 (later)** — Phase 2.5d: 12 read kinds and 5 postcondition kinds,
+  40 tests. 194 engine + 36 MCP pass. Found that adding `settle()` to only one of
+  the two paths broke downloads on the other.
 - **2026-09-01 (later)** — Phase 2.5c: the 27-action registry, wired into both the cold
   and warm paths. 46 new tests; 154 engine + 36 MCP pass. Five real bugs found, listed
   above — the worst being that warm replay silently no-opped unknown actions and could

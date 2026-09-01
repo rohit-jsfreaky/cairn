@@ -96,15 +96,32 @@ class Postcondition:
     instead of silently doing nothing.
     """
 
-    kind: Literal["url_contains", "text_present", "text_gone", "element_present", "download"]
+    kind: Literal[
+        "url_contains",
+        "text_present",
+        "text_gone",
+        "element_present",
+        "element_gone",
+        "download",
+        "value_is",
+        "checked_is",
+        "count_is",
+        "attribute_is",
+    ]
     value: str
+    # Which element to look at, for the kinds that check one. The older kinds carry their
+    # selector in `value`, so this stays optional and old saved playbooks still load.
+    target: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"kind": self.kind, "value": self.value}
+        written: dict[str, Any] = {"kind": self.kind, "value": self.value}
+        if self.target:
+            written["target"] = self.target
+        return written
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Postcondition:
-        return cls(kind=raw["kind"], value=raw["value"])
+        return cls(kind=raw["kind"], value=raw["value"], target=raw.get("target"))
 
 
 @dataclass
@@ -113,7 +130,9 @@ class Step:
 
     index: int
     intent: str
-    action: Literal["goto", "click", "fill", "select", "press", "wait"]
+    # Any action in the registry. Kept as a plain str so adding one never means editing
+    # a type in a second file — `actions.spec_for` is what rejects a bad name.
+    action: str
     postcondition: Postcondition
     locators: list[Locator] = field(default_factory=list)
     value: str | None = None
