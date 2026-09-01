@@ -80,7 +80,7 @@ Two decisions were locked by Rohit on 2026-09-01 and are not open again:
   and ask. A step that recorded "click OK" must never blindly accept a box that now reads
   "delete 400 rows?".
 
-### 2.5a. Snapshot on Playwright's engine (Sep 2)
+### 2.5a. Snapshot on Playwright's engine (Sep 2) - DONE 2026-09-01
 - Delete `_COLLECT_JS`. Use `page.locator("body").aria_snapshot(mode="ai")`, which returns
   role, name, url and a `ref` for everything, pierces shadow DOM and reaches into iframes.
 - Parse that into `Element`s. Act during exploring through `aria-ref=` selectors.

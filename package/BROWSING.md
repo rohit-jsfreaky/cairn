@@ -46,7 +46,7 @@ Measured 2026-09-01, before Phase 2.5 began, and updated as each step lands.
 | ways to wait for a page | 5 | 1 (fixed sleep) | **5 real waits** ✅ 2.5b |
 | ways to read from a page | 18 | 1 (page text) | **12, plus 5 new postcondition kinds** ✅ 2.5d |
 
-| frames / shadow DOM | yes | none | none — still to do (2.5a) |
+| frames / shadow DOM | yes | none | **both, plus div-buttons** ✅ 2.5a |
 
 It started at roughly a quarter, and the missing parts were ordinary things: a hover menu,
 a checkbox filter, a confirm dialog, a login that opens a new tab, a cookie banner.
@@ -420,6 +420,8 @@ Scheduled as **Phase 2.5, Sep 2-3**. `MASTER-PLAN.md` carries the day-by-day sch
 - **2.5b — waiting: DONE 2026-09-01.** Five real waits (element, gone, text, url,
   idle) and the `attached` → `visible` fix. The viewport was fixed back in 2.5c.
 - **2.5f — page events: DONE 2026-09-01.** Dialogs, tabs, overlays, file choosers. 34 tests.
+- **2.5a — the snapshot: DONE 2026-09-01.** On Playwright's own engine. The
+  hand-written collector is deleted. 36 tests.
 - **2.5e — finding: DONE 2026-09-01.** Nine locator kinds plus `nth` and
   `has_text` refinements. 34 tests.
 - **2.5d — reading: DONE 2026-09-01.** 12 read kinds and 5 new postcondition kinds,
@@ -427,7 +429,46 @@ Scheduled as **Phase 2.5, Sep 2-3**. `MASTER-PLAN.md` carries the day-by-day sch
 - **2.5c — the action set: DONE 2026-09-01.** All 21 `Locator` actions plus 6 page-level
   ones, in one registry, wired into both the cold and the warm path. 46 tests. Five real
   bugs found on the way, listed in section 1.
-- Still to do: **2.5a snapshot**, 2.5g the MCP surface, 2.5h the hard page.
+- Still to do: 2.5g the MCP surface, 2.5h the hard page.
+
+### 2.5a: what the snapshot change actually bought
+
+Measured on one page holding a shadow DOM, an iframe, a `div` acting as a button and a
+late-loading link. The old hand-written collector found **1** element. Playwright's
+`aria_snapshot(mode="ai")` finds **8**, and every one is clickable.
+
+The `[cursor=pointer]` flag is the quiet win. A `div` with a click handler has no
+interactive role at all — it is the shape most component libraries produce, and the old
+collector was blind to every one. A pointer cursor is the site itself saying "this is
+clickable".
+
+**Frames are now named in the locator.** This was the open question left in section 3. A
+ref reaches into a frame on its own, but a *stored* locator cannot: `page.locator` does not
+look inside iframes, so a selector recorded in one would find nothing on the next run.
+`Locator.frame` carries the iframe's own selector, and resolution goes through
+`page.frame_locator(...)`. There is a test that strips the frame off a working locator and
+proves it then finds nothing.
+
+**Descriptors are read on demand.** The snapshot gives role, name and a ref cheaply. The
+durable descriptors cost a round trip each, so they are read only for elements actually
+acted on — and for repair candidates, where whoever fixes the step has to write down
+something more lasting than a ref.
+
+### A security problem this uncovered
+
+**Playwright's AI snapshot prints the contents of every field in plain text, passwords
+included:** `textbox "Password" [ref=e3]: hunter2`. Reading a page would have carried the
+password out of the browser.
+
+Cairn keeps the *fact* that a field is filled and throws the contents away — one rule for
+every field, so there is no exception to remember. A caller that genuinely needs the text
+asks with `read(value)`, which is a deliberate act rather than a side effect of looking.
+`describe` reads real values later, in the page, where it can see `type=password` and
+redact it.
+
+Telling the two cases apart matters: with a quoted name the trailing text is the field's
+*contents*, without one it is the element's *name* — which is the only thing a
+`div role="combobox"` has. Both are tested.
 
 ### What 2.5b and 2.5f actually changed
 

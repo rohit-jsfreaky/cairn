@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 LocatorKind = Literal[
     "test_id",
@@ -29,6 +30,18 @@ LocatorKind = Literal[
 # How much a single confirmed hit or miss moves a locator's health.
 _HIT_WEIGHT = 1.0
 _MISS_WEIGHT = 2.0  # a miss is worse news than a hit is good news
+
+
+def href_path(href: str) -> str:
+    """The stable part of a link target: no query string, no fragment.
+
+    Real sites hang session ids and tracking parameters off their links, and the demo site
+    carries `?variant=`. Pinning a locator to the full href would make it miss for reasons
+    that have nothing to do with the site changing. Same reasoning as postconditions
+    matching on path rather than whole URL.
+    """
+    parsed = urlparse(href)
+    return parsed.path or href
 
 
 def utc_now() -> str:
@@ -54,6 +67,11 @@ class Locator:
     """Which match to take when several look alike. 0 is the first, -1 the last."""
     has_text: str | None = None
     """Narrow to the match containing this text — how you find one row in a list."""
+    frame: str | None = None
+    """CSS selector for the iframe this element lives in, if it is inside one.
+
+    Without it the locator is unresolvable: `page.locator` does not look inside iframes, so
+    a selector recorded in one would simply find nothing on the next run."""
     hits: int = 0
     misses: int = 0
     last_ok: str | None = None
@@ -87,6 +105,8 @@ class Locator:
     def describe(self) -> str:
         """How this locator reads in a repair request or an export."""
         written = f"{self.kind}={self.value}"
+        if self.frame:
+            written = f"in frame {self.frame} {written}"
         if self.has_text:
             written += f" containing {self.has_text!r}"
         if self.nth is not None:
@@ -99,6 +119,7 @@ class Locator:
             "value": self.value,
             **({"nth": self.nth} if self.nth is not None else {}),
             **({"has_text": self.has_text} if self.has_text else {}),
+            **({"frame": self.frame} if self.frame else {}),
             "hits": self.hits,
             "misses": self.misses,
             "last_ok": self.last_ok,
@@ -111,6 +132,7 @@ class Locator:
             value=raw["value"],
             nth=raw.get("nth"),
             has_text=raw.get("has_text"),
+            frame=raw.get("frame"),
             hits=raw.get("hits", 0),
             misses=raw.get("misses", 0),
             last_ok=raw.get("last_ok"),

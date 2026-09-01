@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -37,7 +36,9 @@ from playwright.sync_api import Locator as PWLocator
 from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PWTimeout
 
+from . import snapshot as aria
 from .models import Locator
+from .snapshot import Element, Snapshot
 from .waits import DEFAULT_WAIT_MS, LOCATOR_WAIT_MS
 
 # Nothing is granted unless a caller asks for it. A site that wants notifications or
@@ -57,6 +58,10 @@ DISMISS = "dismiss"
 # Which tab to continue in.
 LATEST_TAB = "latest"
 MAIN_TAB = "main"
+
+# How much visible page text one look() may return. Enough to read a heading, an amount
+# and an error message; not so much that a caller pays for the whole page every time.
+MAX_TEXT_CHARS = 1200
 
 # A fixed window for every run. Site layout depends on width - below a breakpoint the
 # nav collapses into a hamburger button, so a trail recorded at one size cannot be
@@ -79,299 +84,76 @@ DEFAULT_PROFILE = Path.home() / ".cairn" / "browser-profile"
 # on purpose is never mistaken for one.
 _SIGNED_OUT_HINTS = ("/login", "/signin", "/sign-in", "/sign_in", "/auth", "/sso", "/oauth")
 
-# Collects the controls worth remembering, with everything needed to build locators.
-# Runs in the page, so one round trip returns the whole snapshot.
-_COLLECT_JS = """
-() => {
-  const roleOf = (el) => {
-    const explicit = el.getAttribute('role');
-    if (explicit) return explicit;
-    const tag = el.tagName.toLowerCase();
-    if (tag === 'a') return el.hasAttribute('href') ? 'link' : 'generic';
-    if (tag === 'button') return 'button';
-    if (tag === 'select') return 'combobox';
-    if (tag === 'textarea') return 'textbox';
-    if (tag === 'input') {
-      const type = (el.getAttribute('type') || 'text').toLowerCase();
-      if (type === 'submit' || type === 'button') return 'button';
-      if (type === 'checkbox') return 'checkbox';
-      if (type === 'radio') return 'radio';
-      return 'textbox';
-    }
-    return tag;
-  };
-
-  const nameOf = (el) => {
-    const aria = el.getAttribute('aria-label');
-    if (aria) return aria.trim();
-    if (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'button')) {
-      return (el.value || '').trim();
-    }
-    const text = (el.innerText || '').trim();
-    if (text) return text.replace(/\\s+/g, ' ').slice(0, 80);
-    // An image has no text of its own; its alt is what a person would call it.
-    const alt = (el.getAttribute('alt') || '').trim();
-    if (alt) return alt;
-    const labelled = el.id && document.querySelector(`label[for="${el.id}"]`);
-    if (labelled) return (labelled.innerText || '').trim();
-    return (el.getAttribute('placeholder') || el.getAttribute('title') || '').trim();
-  };
-
-  // A test id is the most durable handle a page can offer, but there is no one
-  // attribute name for it. Store the name alongside the value so resolving is exact.
-  const testIdOf = (el) => {
+# Reads the durable descriptors for ONE element, the ones a locator is built from.
+#
+# Only ever run for an element actually being acted on. Reading these for every element on
+# every look would cost a round trip per element, and most elements are never touched.
+_DESCRIBE_JS = """
+(el) => {
+  const testIdOf = (node) => {
     const names = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy'];
     for (const name of names) {
-      const found = el.getAttribute(name);
+      const found = node.getAttribute(name);
       if (found) return name + '=' + found;
     }
     return null;
   };
 
-  const labelOf = (el) => {
-    const forId = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+  const labelOf = (node) => {
+    const doc = node.ownerDocument;
+    const forId = node.id && doc.querySelector(`label[for="${CSS.escape(node.id)}"]`);
     if (forId) return (forId.innerText || '').trim();
-    const wrapping = el.closest('label');
+    const wrapping = node.closest('label');
     if (wrapping) return (wrapping.innerText || '').trim();
-    const aria = el.getAttribute('aria-label');
+    const aria = node.getAttribute('aria-label');
     return aria ? aria.trim() : null;
   };
 
-  const cssOf = (el) => {
-    if (el.id && document.querySelectorAll(`#${CSS.escape(el.id)}`).length === 1) {
-      return `#${CSS.escape(el.id)}`;
+  const cssOf = (node) => {
+    const doc = node.ownerDocument;
+    if (node.id && doc.querySelectorAll(`#${CSS.escape(node.id)}`).length === 1) {
+      return `#${CSS.escape(node.id)}`;
     }
-    if (el.name && el.tagName === 'INPUT') {
-      const sel = `${el.tagName.toLowerCase()}[name="${el.name}"]`;
-      if (document.querySelectorAll(sel).length === 1) return sel;
+    if (node.name && node.tagName === 'INPUT') {
+      const sel = `${node.tagName.toLowerCase()}[name="${node.name}"]`;
+      if (doc.querySelectorAll(sel).length === 1) return sel;
     }
     const parts = [];
-    let node = el;
-    while (node && node.nodeType === 1 && parts.length < 5) {
-      const tag = node.tagName.toLowerCase();
+    let walker = node;
+    while (walker && walker.nodeType === 1 && parts.length < 5) {
+      const tag = walker.tagName.toLowerCase();
       if (tag === 'html' || tag === 'body') break;
-      const parent = node.parentElement;
+      const parent = walker.parentElement;
       if (!parent) break;
-      const siblings = Array.from(parent.children).filter(c => c.tagName === node.tagName);
-      const index = siblings.indexOf(node) + 1;
+      const siblings = Array.from(parent.children).filter(c => c.tagName === walker.tagName);
+      const index = siblings.indexOf(walker) + 1;
       parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${index})` : tag);
-      node = parent;
+      walker = parent;
     }
     return parts.join(' > ');
   };
 
-  const visible = (el) => {
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return false;
-    const style = window.getComputedStyle(el);
-    return style.visibility !== 'hidden' && style.display !== 'none';
+  const type = (el.getAttribute('type') || '').toLowerCase();
+  let value = null;
+  if ('value' in el && typeof el.value === 'string') {
+    // Never report what is typed in a password box, not even back to the caller.
+    value = type === 'password' ? (el.value ? '(filled)' : '') : el.value.slice(0, 120);
+  }
+
+  return {
+    tag: el.tagName.toLowerCase(),
+    css: cssOf(el),
+    type: el.getAttribute('type'),
+    href: el.getAttribute('href'),
+    test_id: testIdOf(el),
+    label: labelOf(el),
+    placeholder: el.getAttribute('placeholder'),
+    title: el.getAttribute('title'),
+    alt: el.getAttribute('alt'),
+    value: value,
   };
-
-  const selector = [
-    'a[href]', 'button', 'input', 'select', 'textarea',
-    '[role="button"]', '[role="link"]', '[role="img"]',
-    // An icon button is often an image with nothing but alt text on it. Empty alt means
-    // the image is decorative, and a decorative image is not worth remembering.
-    'img[alt]:not([alt=""])',
-  ].join(', ');
-  const out = [];
-  document.querySelectorAll(selector).forEach((el, i) => {
-    if (!visible(el)) return;
-    const type = (el.getAttribute('type') || '').toLowerCase();
-    const isSecret = type === 'password';
-    let value = null;
-    if ('value' in el && typeof el.value === 'string') {
-      // Never report what is typed in a password box, not even back to the caller.
-      value = isSecret ? (el.value ? '(filled)' : '') : el.value.slice(0, 120);
-    }
-    out.push({
-      ref: 'e' + (out.length + 1),
-      role: roleOf(el),
-      name: nameOf(el),
-      tag: el.tagName.toLowerCase(),
-      css: cssOf(el),
-      href: el.getAttribute('href'),
-      type: el.getAttribute('type'),
-      value: value,
-      test_id: testIdOf(el),
-      label: labelOf(el),
-      placeholder: el.getAttribute('placeholder'),
-      title: el.getAttribute('title'),
-      alt: el.getAttribute('alt'),
-    });
-  });
-
-  // Which of the look-alikes is this? Three "Edit" buttons need an index, or every one of
-  // them stores the same locator and replay picks whichever comes first.
-  const seen = {};
-  out.forEach((item) => {
-    const key = item.role + '|' + item.name;
-    seen[key] = (seen[key] || 0) + 1;
-  });
-  const counted = {};
-  out.forEach((item) => {
-    const key = item.role + '|' + item.name;
-    item.twins = seen[key];
-    counted[key] = (counted[key] || 0);
-    item.nth = counted[key];
-    counted[key] += 1;
-  });
-  return out;
 }
 """
-
-
-# Tags whose accessible name does not come from text inside them: a form field is named by
-# a `<label>` beside it, and an image by its alt attribute. Searching the page for that text
-# would find the label, or nothing at all.
-_NAMED_FROM_ELSEWHERE = {"input", "select", "textarea", "img"}
-
-
-@dataclass
-class Element:
-    """One control on the page, with every way we know to find it again."""
-
-    ref: str
-    role: str
-    name: str
-    tag: str
-    css: str
-    href: str | None = None
-    type: str | None = None
-    test_id: str | None = None
-    label: str | None = None
-    placeholder: str | None = None
-    title: str | None = None
-    alt: str | None = None
-    nth: int = 0
-    """Which of the look-alikes this is, among elements with the same role and name."""
-    twins: int = 1
-    """How many elements share this role and name. More than one means a bare role
-    locator is ambiguous and needs `nth` pinned to it."""
-    value: str | None = None
-    """What the field currently holds. A page can arrive with fields already filled, and
-    an AI that cannot see that will ask the user for something already on screen. Password
-    boxes report "(filled)" rather than their contents."""
-
-    def locators(self) -> list[Locator]:
-        """Every way we know to find this element again, most durable first.
-
-        The order is a claim about what survives a redesign. A test id is written for
-        machines and almost never touched. A link target usually outlives its label, and a
-        label usually outlives a CSS id, which is the first thing a rewrite throws away.
-
-        Replay reorders these by measured confidence once they have a track record, so the
-        order here only decides what gets tried on the very first replay.
-        """
-        found: list[Locator] = []
-
-        if self.test_id:
-            found.append(Locator("test_id", self.test_id))
-        if self.href:
-            found.append(Locator("structural", f"href={href_path(self.href)}"))
-        if self.label:
-            found.append(self._pin(Locator("label", self.label)))
-        if self.name:
-            found.append(self._pin(Locator("role", f"{self.role}|{self.name}")))
-        if self.placeholder:
-            found.append(self._pin(Locator("placeholder", self.placeholder)))
-        if self.alt:
-            found.append(self._pin(Locator("alt", self.alt)))
-        if self.title:
-            found.append(self._pin(Locator("title", self.title)))
-        if self.name and self._text_is_its_own:
-            found.append(self._pin(Locator("text", self.name)))
-        if self.css:
-            found.append(Locator("css", self.css))
-        return found
-
-    @property
-    def _text_is_its_own(self) -> bool:
-        """Is this element's name the text inside it, rather than text pointing at it?
-
-        A form field takes its name from a `<label>` that sits beside it, so searching the
-        page for that text finds the label, not the field. Filling a label does nothing.
-        Links and buttons contain their own words, so for them a text locator is sound.
-        """
-        return self.tag not in _NAMED_FROM_ELSEWHERE
-
-    def _pin(self, locator: Locator) -> Locator:
-        """Add a position to a locator that would otherwise be ambiguous.
-
-        Three buttons all called "Edit" would each store the same locator, and every replay
-        would press the first one. Pinning the index is what makes row three actually row
-        three. Left alone when the element is unique, because an index is one more thing
-        that can go stale.
-        """
-        if self.twins > 1:
-            locator.nth = self.nth
-        return locator
-
-    def to_dict(self) -> dict[str, str | None]:
-        described: dict[str, str | None] = {
-            "ref": self.ref,
-            "role": self.role,
-            "name": self.name,
-            "css": self.css,
-            "href": self.href,
-        }
-        if self.value:
-            described["value"] = self.value
-        for name, extra in (
-            ("test_id", self.test_id),
-            ("label", self.label),
-            ("placeholder", self.placeholder),
-        ):
-            if extra:
-                described[name] = extra
-        if self.twins > 1:
-            described["nth"] = str(self.nth)
-        return described
-
-
-# How much visible page text one look() may return. Enough to read a heading, an amount
-# or an error message; far too little to be a page dump. The whole point of the project is
-# not paying to push pages through a model.
-MAX_TEXT_CHARS = 1200
-
-
-@dataclass
-class Snapshot:
-    """What the page looks like right now, small enough to hand to a model."""
-
-    url: str
-    title: str
-    elements: list[Element] = field(default_factory=list)
-    text: str = ""
-    """A trimmed view of what the page says. Without this Cairn can click but never read,
-    so "check the balance" or "what does the error say" would be impossible."""
-
-    @property
-    def domain(self) -> str:
-        return domain_of(self.url)
-
-    def by_ref(self, ref: str) -> Element | None:
-        return next((e for e in self.elements if e.ref == ref), None)
-
-    def to_dict(self) -> dict:
-        return {
-            "url": self.url,
-            "title": self.title,
-            "text": self.text,
-            "elements": [e.to_dict() for e in self.elements],
-        }
-
-
-def href_path(href: str) -> str:
-    """The stable part of a link target: no query string, no fragment.
-
-    Real sites hang session ids and tracking parameters off their links, and the demo site
-    carries `?variant=`. Pinning a locator to the full href would make it miss for reasons
-    that have nothing to do with the site changing. Same reasoning as postconditions
-    matching on path rather than whole URL.
-    """
-    parsed = urlparse(href)
-    return parsed.path or href
 
 
 def domain_of(url: str) -> str:
@@ -675,14 +457,54 @@ class Browser:
         self.page.goto(url, wait_until="domcontentloaded")
 
     def snapshot(self) -> Snapshot:
-        """The page as a short list of things you can act on."""
-        raw = self.page.evaluate(_COLLECT_JS)
+        """The page as a short list of things you can act on.
+
+        Playwright's own accessibility snapshot, which sees through shadow roots and into
+        iframes, and reports a pointer cursor — which is how a `div` acting as a button
+        gets found at all.
+        """
+        raw = self.page.locator("body").aria_snapshot(mode="ai")
         return Snapshot(
             url=self.page.url,
             title=self.page.title(),
-            elements=[Element(**item) for item in raw],
+            elements=aria.parse(raw, frames=self._frame_selectors(raw)),
             text=self.readable_text(),
         )
+
+    def _frame_selectors(self, raw: str) -> dict[str, str]:
+        """Map each frame number to a selector for its iframe.
+
+        An element inside an iframe cannot be found later by a plain selector, because
+        `page.locator` does not look inside frames. The locator has to name the frame too,
+        so the iframe itself needs a durable selector of its own.
+        """
+        selectors: dict[str, str] = {}
+        for number, ref in enumerate(aria.iframe_refs(raw), start=1):
+            described = self._describe_ref(ref)
+            if described and described.get("css"):
+                selectors[str(number)] = described["css"]
+        return selectors
+
+    def _describe_ref(self, ref: str) -> dict[str, Any] | None:
+        try:
+            return self.page.locator(f"aria-ref={ref}").evaluate(_DESCRIBE_JS)
+        except PlaywrightError:
+            return None
+
+    def describe(self, element: Element) -> Element:
+        """Fill in the durable descriptors for one element, by reading the page.
+
+        Done here rather than during `snapshot` because it costs a round trip each, and
+        only the elements actually acted on ever need them. A ref is good for one snapshot;
+        these are what get written down.
+        """
+        described = self._describe_ref(element.ref)
+        if not described:
+            return element
+        for key, value in described.items():
+            if value is not None and hasattr(element, key):
+                setattr(element, key, value)
+        return element
 
     def readable_text(self, limit: int = MAX_TEXT_CHARS) -> str:
         """What the page says, tidied and cut short.
@@ -731,7 +553,9 @@ class Browser:
         return base
 
     def _base_locator(self, locator: Locator) -> PWLocator | None:
-        page = self.page
+        # An element inside an iframe is invisible to `page.locator`, so a locator that
+        # named a frame has to be resolved through that frame.
+        page: Any = self.page.frame_locator(locator.frame) if locator.frame else self.page
         if locator.kind == "css":
             return page.locator(locator.value)
         if locator.kind == "text":
@@ -767,10 +591,12 @@ class Browser:
     def locate(self, element: Element) -> PWLocator:
         """Turn a snapshot element into something Playwright can act on.
 
-        One seam, so that when stored locators learn to name their iframe (2.5e) only this
-        method changes.
+        `aria-ref` resolves through shadow roots and across frame boundaries on its own, so
+        nothing here needs to know where the element lives. That is only true within the
+        snapshot the ref came from — which is why acting always re-reads it, and why refs
+        never reach memory.
         """
-        return self.page.locator(element.css).first
+        return self.page.locator(f"aria-ref={element.ref}").first
 
     def settle(self) -> None:
         """Let the page catch up after an action.

@@ -44,6 +44,20 @@ def lab(browser: Browser) -> Browser:
     return browser
 
 
+def described(browser: Browser, name: str):
+    """Find a control by its visible name and read its durable descriptors.
+
+    `snapshot()` returns role, name and a ref; the descriptors a locator is built from are
+    read on demand, only for the elements actually used.
+    """
+    snapshot = browser.snapshot()
+    for element in snapshot.elements:
+        if element.name == name:
+            return browser.describe(element)
+    seen = [element.name for element in snapshot.elements]
+    raise AssertionError(f"no control named {name!r}. saw: {seen}")
+
+
 def resolves_to(browser: Browser, locator: Locator) -> str | None:
     """What did this locator actually land on?"""
     found = browser.resolve(locator)
@@ -183,8 +197,8 @@ def test_describe_reads_clearly() -> None:
 
 
 def test_snapshot_captures_the_new_descriptors(lab: Browser) -> None:
-    snapshot = lab.snapshot()
-    email = next(el for el in snapshot.elements if el.css == "#email")
+    email = described(lab, "Email address")
+    assert email.css == "#email"
     assert email.test_id == "data-testid=email-field"
     assert email.label == "Email address"
     assert email.placeholder == "you@company.com"
@@ -192,8 +206,7 @@ def test_snapshot_captures_the_new_descriptors(lab: Browser) -> None:
 
 def test_snapshot_counts_look_alikes(lab: Browser) -> None:
     """Three Edit buttons must be told apart, or all three store the same locator."""
-    snapshot = lab.snapshot()
-    edits = [el for el in snapshot.elements if el.name == "Edit"]
+    edits = [el for el in lab.snapshot().elements if el.name == "Edit"]
     assert len(edits) == 3
     assert [el.nth for el in edits] == [0, 1, 2]
     assert all(el.twins == 3 for el in edits)
@@ -201,16 +214,14 @@ def test_snapshot_counts_look_alikes(lab: Browser) -> None:
 
 def test_a_unique_element_is_not_pinned_to_a_position(lab: Browser) -> None:
     """An index is one more thing that can go stale, so it is only added when needed."""
-    snapshot = lab.snapshot()
-    save = next(el for el in snapshot.elements if el.name == "Save")
+    save = described(lab, "Save")
     assert save.twins == 1
     assert all(loc.nth is None for loc in save.locators())
 
 
 def test_look_alikes_are_pinned(lab: Browser) -> None:
-    snapshot = lab.snapshot()
-    edits = [el for el in snapshot.elements if el.name == "Edit"]
-    third = edits[2].locators()
+    edits = [el for el in lab.snapshot().elements if el.name == "Edit"]
+    third = lab.describe(edits[2]).locators()
     assert any(loc.nth == 2 for loc in third)
 
 
@@ -235,28 +246,28 @@ def test_a_form_field_is_not_given_a_text_locator(lab: Browser) -> None:
     """A field takes its name from a `<label>` beside it, so searching the page for that
     text finds the label, not the field — and filling a label does nothing. Found by
     `test_every_locator_a_real_element_offers_actually_resolves`."""
-    snapshot = lab.snapshot()
-    email = next(el for el in snapshot.elements if el.css == "#email")
-    assert email.name == "Email address"
+    email = described(lab, "Email address")
     assert not any(loc.kind == "text" for loc in email.locators())
 
 
 def test_a_link_is_still_given_a_text_locator(lab: Browser) -> None:
     """Links and buttons contain their own words, so text is sound for them."""
-    snapshot = lab.snapshot()
-    link = next(el for el in snapshot.elements if el.css == "#link")
+    link = described(lab, "September 2026")
     assert any(loc.kind == "text" for loc in link.locators())
 
 
-@pytest.mark.parametrize("selector", ["#email", "#link", "#logo"])
-def test_every_locator_a_real_element_offers_actually_resolves(lab: Browser, selector: str) -> None:
+@pytest.mark.parametrize(
+    ("name", "wanted"),
+    [("Email address", "email"), ("September 2026", "link"), ("Company logo", "logo")],
+)
+def test_every_locator_a_real_element_offers_actually_resolves(
+    lab: Browser, name: str, wanted: str
+) -> None:
     """The end-to-end claim: every locator we store for an element finds that element.
     A locator that is written down but never resolves is worse than none — it costs a
     failed attempt on every replay."""
-    snapshot = lab.snapshot()
-    wanted = selector.lstrip("#")
-    element = next(el for el in snapshot.elements if el.css == selector)
-    assert element.locators(), f"{selector} offers no locators at all"
+    element = described(lab, name)
+    assert element.locators(), f"{name} offers no locators at all"
     for locator in element.locators():
         found = lab.resolve(locator)
         assert found is not None, f"{locator.describe()} found nothing"

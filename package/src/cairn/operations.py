@@ -183,7 +183,10 @@ class Session:
             self._do_here(action, value)
             return None
 
-        element = self._element_for(ref) if spec.needs_target else None
+        # Describe before acting. The durable descriptors have to be read while the
+        # element is still on the page as it was — a click can navigate away, and then
+        # there is nothing left to describe.
+        element = self.browser.describe(self._element_for(ref)) if spec.needs_target else None
         target = self.browser.locate(element) if element else None
         second = self.browser.locate(self._element_for(to)) if spec.needs_second_target else None
 

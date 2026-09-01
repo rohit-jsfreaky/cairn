@@ -393,7 +393,12 @@ class Executor:
     # -------------------------------------------------------------- repair
 
     def _repair_request(self, playbook: Playbook, step: Step, tried: list[str]) -> RepairRequest:
-        """Describe the one broken step, with the current page's controls as candidates."""
+        """Describe the one broken step, with the current page's controls as candidates.
+
+        The candidates are described in full rather than left as bare refs. Whoever repairs
+        this step has to write down a locator that will still work next month, and a ref is
+        good for one snapshot only — so the durable descriptors have to travel with it.
+        """
         snapshot = self.browser.snapshot()
         return RepairRequest(
             domain=playbook.domain,
@@ -402,7 +407,7 @@ class Executor:
             action=step.action,
             tried=tried,
             url=snapshot.url,
-            candidates=[element.to_dict() for element in snapshot.elements],
+            candidates=[self.browser.describe(element).to_dict() for element in snapshot.elements],
         )
 
     def apply_repair(self, domain: str, step_index: int, locator: Locator) -> Playbook:

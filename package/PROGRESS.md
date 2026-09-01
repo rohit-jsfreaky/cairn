@@ -294,9 +294,45 @@ Four things, 16 tests in `tests/test_context.py`:
 Cookies and storage stay out: keeping a whole browser profile already covers them, and does
 it better than replaying a saved blob.
 
+### 2.5a is DONE (2026-09-01) — the snapshot
+
+`_COLLECT_JS` is deleted. `snapshot.py` parses Playwright's own
+`aria_snapshot(mode="ai")`. 36 tests in `tests/test_snapshot.py`.
+
+**Measured on the hard page: the old collector found 1 element, this finds 8** — shadow
+DOM, iframe contents, a `div` acting as a button, a `div` with a widget role, and content
+that loaded late. All eight are clickable.
+
+The `[cursor=pointer]` flag is the quiet win. A `div` with a click handler has no
+interactive role at all, and that is the shape most component libraries produce.
+
+**Frames are now named in the locator**, which closes the open question from 2.5e. A ref
+reaches into a frame by itself, but a *stored* locator cannot — `page.locator` does not
+look inside iframes. `Locator.frame` holds the iframe's own selector and resolution goes
+through `page.frame_locator`. A test strips the frame off a working locator and proves it
+then finds nothing, so the field cannot rot into decoration.
+
+**Descriptors are read on demand**, not for every element on every look. That would be a
+round trip per element and most are never touched.
+
+### The security problem this uncovered
+
+**Playwright's AI snapshot prints every field's contents in plain text, passwords
+included:** `textbox "Password" [ref=e3]: hunter2`. Looking at a page would have carried
+the password out of the browser and into the trace.
+
+Cairn now keeps only the fact that a field is filled and throws the contents away — one
+rule for every field, so there is no exception to remember. `read(value)` gets the real
+text when a caller actually wants it, and `describe` reads values in the page where it can
+see `type=password` and redact.
+
+The existing test `test_look_never_reports_what_is_in_a_password_box` caught this. It was
+written for the old collector and it held the line through a full rewrite of the layer
+underneath it — the best argument yet for testing behaviour rather than implementation.
+
 ## Next action
 
-**2.5a — the snapshot**, then 2.5b (waiting), 2.5d (reading), 2.5e (locators), 2.5f (events),
+**2.5g — the MCP surface**, then 2.5h the hard page kept forever., then 2.5b (waiting), 2.5d (reading), 2.5e (locators), 2.5f (events),
 2.5g (the MCP surface), 2.5h (the hard page).
 
 Note the order: the action layer landed first because it is the part that does not depend on
@@ -316,6 +352,10 @@ is the biggest remaining gap between "demo" and "product".
 ## Session log
 
 - **2026-08-31** — folder created, plan written. No code.
+- **2026-09-01 (later)** — Phase 2.5a: the snapshot moved onto Playwright's engine, the
+  hand-written collector deleted, frames named in locators. 1 element -> 8 on the hard
+  page. Found that Playwright's snapshot leaks password values, and stopped it.
+  36 tests. 314 engine + 36 MCP pass.
 - **2026-09-01 (later)** — BROWSING.md section 5: permissions, geolocation, new_tab,
   one timeout. 16 tests. 278 engine + 36 MCP pass.
 - **2026-09-01 (later)** — Phases 2.5b + 2.5f: five real waits, the attached→visible
