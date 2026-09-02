@@ -277,6 +277,9 @@ EXERCISED = {
     "url",
     "title",
     "page_text",
+    # Covered in tests/test_escape_hatch.py.
+    "console_errors",
+    "failed_requests",
 }
 
 

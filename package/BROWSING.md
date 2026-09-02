@@ -274,7 +274,7 @@ These are not element actions. If they are not handled, the browser simply stops
 | `keyboard.insert_text` | via `type` | **yes** | |
 | `mouse.wheel` | `scroll(amount)` | **yes** | infinite-scroll lists that ignore `scroll_into_view` |
 | `mouse.move/down/up` | — | **no** | raw coordinates are the least durable thing possible |
-| `touchscreen` | — | **no** | no mobile emulation |
+| `touchscreen` | `tap` | **built** | via `Browser(touch=True)`, which is off by default: some sites serve a different mobile layout the moment they detect touch, and that would change what every other trail sees |
 
 ### Frames
 | Playwright | Cairn | in? |
@@ -324,26 +324,109 @@ than replaying a saved blob.
 
 ---
 
-# What Cairn ends up with
+# What Cairn ended up with
 
-**Actions (16)** — goto, click, double_click, hover, fill, type, clear, press, check,
-uncheck, select, upload, scroll_to, scroll, drag, focus/blur
+Counted from the code on 2026-09-01, not from the plan above — the plan was written before
+any of it existed and undercounted.
 
-**Navigation and waiting (5)** — back, reload, wait_for(url | element | text | idle), wait
+**Actions (31)**, all behind one `cairn_act`:
 
-**Reading (1 verb, 8 kinds)** — text, all_text, value, checked, visible, enabled,
-attribute, count
+- *element* — click, double_click, hover, tap, fill, type, clear, press, select_text,
+  check, uncheck, set_checked, select, upload, scroll_to, drag, focus, blur,
+  dispatch_event, highlight, hide_highlight
+- *page* — goto, back, forward, reload, scroll, wait, wait_for, new_tab, switch_tab,
+  dismiss_when_seen
 
-**Page events (4)** — dialogs, popups and new tabs, file chooser, `dismiss_when_seen` for
-overlays
+**Reads (12 kinds)**, all behind one `cairn_read` — text, all_text, value, checked,
+visible, enabled, editable, attribute, count, url, title, page_text. Plus `page`, the
+control list, which is the tool's default.
 
-**Locator kinds (10, from 4)** — role, text, css, href, label, placeholder, test_id, title,
-alt, nth/filtered
+**Waits (5)** — element, gone, text, url, idle. None of them is a sleep.
+
+**Locator kinds (9, from 4)** — test_id, structural(href), label, role, placeholder, alt,
+title, text, css. Plus two refinements that compose with all nine: `nth` and `has_text`.
+Plus `frame`, so a locator inside an iframe can be resolved again.
 
 **Postcondition kinds (10, from 5)** — url_contains, text_present, text_gone,
 element_present, element_gone, download, value_is, checked_is, count_is, attribute_is
 
+**Page events (4)** — dialogs, popups and new tabs, file chooser, overlays.
+
 Every one of these is a thin pass-through to Playwright. The cost is breadth, not depth.
+
+## The escape hatch (decided 2026-09-02)
+
+Rohit asked for all 177 Playwright methods as named actions: *"in the real world we cannot
+guess that ohh this is not useful, maybe this is useful we dont know just yet, because the
+web is changing."*
+
+He is right about the risk, and he had already been proved right twice — I marked
+`select_text` and `dispatch_event` as "nobody needs these" and both turned out to matter.
+
+But the framing needed one correction. **Cairn already HAS all of Playwright.** It is an
+installed dependency and all 177 methods are callable right now. This registry does not
+decide what Cairn *can* do; it decides what gets written into a trail. Those have different
+costs — more power while exploring is nearly free, while more names in a trail measurably
+hurts tool choice, and a host AI has already ignored Cairn once and reached for `curl`.
+
+So instead of 94 named actions, **one `evaluate`**:
+
+- runs any JavaScript, on the page or on one element
+- covers everything nobody thought of, without anyone having to predict it
+- **is never written into a trail**, because a step made of code cannot be repaired.
+  Repair works by finding an element again; a blob of JavaScript has no element, so it
+  could only ever break.
+
+Plus the three things a hatch genuinely does not cover:
+
+| built | why a hatch does not cover it |
+|---|---|
+| `read(console_errors)` / `read(failed_requests)` | you cannot ask the page why it failed — the failure already happened. These are collected as they occur |
+| `set_time` | a trail recorded in September reads the wrong month in October, and nothing about that looks like a broken step |
+| `screenshot` | for showing a human what happened. Never a step |
+
+**My old reason for excluding `evaluate` was weak** and is worth correcting: I said it was
+about protecting the user from arbitrary code. It was not — the host AI already has shell
+access and could write its own Playwright script. The real reason is repairability, and
+that is solved by never recording it.
+
+## Full parity — deferred, NOT dropped
+
+Rohit's call, 2026-09-02: *"we are not discarding things, we are just shifting them to the
+end, so if we have time we will do it."*
+
+Everything in the table below stays on the list. `evaluate` means none of it blocks a real
+site in the meantime — the AI can already do all of it, just without a name. When a real
+website shows us one of these earns a name, we promote it and it becomes recordable.
+
+That order is better than guessing now: a capability promoted because a real site needed it
+arrives with a real test.
+
+## What is deliberately still out
+
+Nothing on this list is missing by accident, and none of it is needed to use a website:
+
+| left out | why |
+|---|---|
+| `evaluate`, `evaluate_all`, `element_handle` | running arbitrary JavaScript. It cannot be verified afterwards, and it is the escape hatch that would let a trail do anything at all |
+| `inner_html` | raw markup is the cost Cairn exists to remove |
+| `route`, `route_from_har`, `unroute` | intercepting network traffic changes what the site *is*. A trail recorded against a faked response is a trail against a site that does not exist |
+| `add_init_script`, `add_script_tag`, `expose_function` | injecting code into somebody else's site |
+| `tracing`, `video`, `screencast`, `pdf` | test-framework and recording features, not part of a trail |
+| `bounding_box`, `mouse.move/down/up` | raw pixel coordinates are the least durable thing on a page |
+| `and_` / `or_` | combining predicates is more expressive than a stored trail needs |
+| `set_content` | fabricating a page rather than visiting one |
+| cookies, `storage_state`, local/session storage | the browser profile already carries all of it, and carries it better |
+| `pause`, `pick_locator` | interactive debugging, with nobody sitting there |
+| `expect_request` / `expect_response` | a test framework's job |
+| `set_offline` | no use in a recorded trail |
+
+**All three are now built (2026-09-02).** What is left is the table above, deferred to Phase 7:
+
+1. ✅ **`screenshot`** — built, never a step.
+2. ✅ **`console_message` / `page_error`** — built as `read(console_errors)` and
+   `read(failed_requests)`.
+3. ✅ **`clock`** — built as `set_time`.
 
 ---
 

@@ -106,6 +106,20 @@ READS: dict[str, ReadSpec] = {
         "text",
         needs_target=False,
     ),
+    "console_errors": ReadSpec(
+        "console_errors",
+        "the errors the page itself reported. When a run fails for no visible reason, this "
+        "is usually why — read it before guessing",
+        "a list of messages",
+        needs_target=False,
+    ),
+    "failed_requests": ReadSpec(
+        "failed_requests",
+        "the requests the page made that came back broken. A dashboard that stays empty "
+        "is usually one failed request, not a missing element",
+        "a list of urls with their status",
+        needs_target=False,
+    ),
     "page_text": ReadSpec(
         "page_text",
         "the readable text of the whole page. A last resort — prefer `text` with an "
@@ -215,6 +229,14 @@ def _page_text(page: Page, t: PWLocator | None, attribute: str | None) -> str:
     return page.inner_text("body")
 
 
+def _console_errors(page: Page, t: PWLocator | None, attribute: str | None) -> list[str]:
+    return list(getattr(page, "_cairn_console", []))
+
+
+def _failed_requests(page: Page, t: PWLocator | None, attribute: str | None) -> list[str]:
+    return list(getattr(page, "_cairn_failures", []))
+
+
 _READERS: dict[str, Any] = {
     "text": _text,
     "all_text": _all_text,
@@ -228,6 +250,8 @@ _READERS: dict[str, Any] = {
     "url": _url,
     "title": _title,
     "page_text": _page_text,
+    "console_errors": _console_errors,
+    "failed_requests": _failed_requests,
 }
 
 

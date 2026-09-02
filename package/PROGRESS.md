@@ -124,6 +124,35 @@ Rohit needs to decide whether Phase 1 counts as closed on that basis. Flagged, n
 - `pip install -e "package[dev]"`, plus `ruff` and Chromium (`playwright install chromium`).
 - Demo site: `python package/tests/demo_site/app.py` -> port 8787, variants a / b / c.
 
+### The escape hatch is DONE (2026-09-02)
+
+Rohit asked for full Playwright parity — all 177 methods as named actions — because we
+cannot predict what a real site will need. He was right about the risk and had already been
+proved right twice.
+
+What we built instead, with his agreement: **one `evaluate`, plus the three gaps a hatch
+cannot cover.** 21 tests in `tests/test_escape_hatch.py`.
+
+- **`evaluate`** — any JavaScript, on the page or on one element. `recordable=False`, and
+  the description says so in capitals, because a step made of code cannot be repaired:
+  repair works by finding an element again, and a blob has no element.
+- **`read(console_errors)` and `read(failed_requests)`** — collected as they happen, capped
+  at 50. A dashboard that stays empty is usually one failed request, not a missing element.
+  Ordinary `console.log` chatter is dropped; only errors and warnings are kept.
+- **`set_time`** — a trail recorded in September reads the wrong month in October, and
+  nothing about that looks like a broken step.
+- **`screenshot`** — for showing a human. Never a step.
+
+`actions.perform` now returns a value, so `evaluate` and `screenshot` can answer something.
+Everything else still answers None.
+
+**Correcting myself:** my old reason for excluding `evaluate` was that it let an AI run
+arbitrary code. That was weak — the host AI already has shell access and could write its
+own Playwright script. The real reason is repairability, and not recording it solves that.
+
+**Full parity is deferred, not dropped** — Phase 7 in MASTER-PLAN.md. The rule for
+promoting one of the 94 to a real action: a real website needed it. Not a guess.
+
 ## Next action
 
 **Phase 2.5 - the browsing layer.** Read `BROWSING.md` first, then `PLAN.md` section 2.5.
@@ -434,6 +463,9 @@ is the biggest remaining gap between "demo" and "product".
 ## Session log
 
 - **2026-08-31** — folder created, plan written. No code.
+- **2026-09-02** — The escape hatch: `evaluate` (never recorded), console and
+  network diagnostics, `set_time`, `screenshot`. 21 tests; 354 engine + 56 MCP
+  pass. Full Playwright parity deferred to Phase 7, not dropped.
 - **2026-09-01 (later)** — Phase 2.5h + close-out: the hard page at /hard, nine
   obstacles, 19 tests. Checking finish-line item 5 found three bugs: `recordable`
   was never honoured, overlays were never saved or re-armed, and overlay handlers

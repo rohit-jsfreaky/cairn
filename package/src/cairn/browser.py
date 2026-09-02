@@ -50,6 +50,14 @@ NO_PERMISSIONS: list[str] = []
 # fix that never arrives, so the two always travel together.
 GEOLOCATION = "geolocation"
 
+# How many console errors and failed requests to keep per page. Enough to explain a
+# failure, small enough that a long-running session does not grow without limit.
+MAX_DIAGNOSTICS = 50
+
+# Requests at or above this status are worth reporting. A dashboard that stays empty is
+# usually one failed request rather than a missing element.
+FAILED_STATUS = 400
+
 # What to do with a confirm box. Accepting is the default because Playwright's own
 # default — dismissing — silently cancels saves and submits.
 ACCEPT = "accept"
@@ -154,6 +162,13 @@ _DESCRIBE_JS = """
   };
 }
 """
+
+
+def _keep(kept: list[str], line: str) -> None:
+    """Add to a capped list, dropping the oldest. The newest failure is the useful one."""
+    kept.append(line)
+    if len(kept) > MAX_DIAGNOSTICS:
+        del kept[0]
 
 
 def domain_of(url: str) -> str:
@@ -335,9 +350,36 @@ class Browser:
         page.on("download", self._remember_download)
         page.on("dialog", self._answer_dialog)
 
+        # Diagnostics. Kept on the page itself so every tab has its own, and so `reads`
+        # can find them without knowing anything about Cairn.
+        page._cairn_console = []  # type: ignore[attr-defined]
+        page._cairn_failures = []  # type: ignore[attr-defined]
+        page.on("console", lambda message: self._remember_console(page, message))
+        page.on("pageerror", lambda error: _keep(page._cairn_console, f"error: {error}"))  # type: ignore[attr-defined]
+        page.on("response", lambda response: self._remember_failure(page, response))
+
         # Whatever this site is known to cover itself with, this tab gets it too.
         for selector in self._overlays:
             self._arm_overlay(page, selector)
+
+    def _remember_console(self, page: Page, message: Any) -> None:
+        """Only the errors and warnings. A chatty site logs hundreds of ordinary lines."""
+        if message.type in ("error", "warning"):
+            _keep(page._cairn_console, f"{message.type}: {message.text}")  # type: ignore[attr-defined]
+
+    def _remember_failure(self, page: Page, response: Any) -> None:
+        if response.status >= FAILED_STATUS:
+            _keep(page._cairn_failures, f"{response.status} {response.url}")  # type: ignore[attr-defined]
+
+    def set_time(self, when: str) -> None:
+        """Tell every page it is a different date.
+
+        A dashboard whose numbers depend on today is otherwise unreplayable: a trail
+        recorded in September reads the wrong month in October, and nothing about that
+        looks like a broken step.
+        """
+        for page in self.tabs:
+            page.clock.set_fixed_time(when)
 
     def _remember_tab(self, page: Page) -> None:
         if page not in self.tabs:

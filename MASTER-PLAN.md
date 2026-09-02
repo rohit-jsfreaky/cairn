@@ -85,6 +85,20 @@ carry a caveat — see the honest read-out in `package/PROGRESS.md`.
 4. A confirm dialog is recorded with its message; replay stops if the message changed.
 5. A cookie banner learned once is dismissed automatically on every later run.
 
+## Phase 7 — Full Playwright parity · AFTER Sep 10 · `package/`
+
+**Not part of the hackathon.** Rohit's call 2026-09-02: deferred, not dropped.
+
+Give a proper name, a postcondition and a recordable step to the capabilities currently
+reachable only through `evaluate`. The full list, with the reason each one was left out
+first time, is in `package/BROWSING.md`.
+
+**The rule for promoting one:** a real website needed it. Not a guess. A capability
+promoted because a site demanded it arrives with a real test attached; one promoted because
+it might be useful arrives with a test we invented.
+
+Nothing here blocks a real site today — `evaluate` already reaches all of it.
+
 ## Phase 3 — Backend · Sep 6 · `backend/` → `backend/PLAN.md`
 
 Thin FastAPI server over the package: run lifecycle, live event stream (SSE), memory

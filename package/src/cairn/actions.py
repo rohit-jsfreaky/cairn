@@ -18,6 +18,7 @@ Two rules hold throughout:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -215,6 +216,34 @@ ACTIONS: dict[str, ActionSpec] = {
         needs_target=False,
         value_means='"down", "up", "top", "bottom", or a number of pixels',
     ),
+    "evaluate": ActionSpec(
+        "evaluate",
+        "run your own JavaScript on the page and get the result back. THE ESCAPE HATCH — "
+        "when a site does something none of the actions above covers, write the code "
+        "yourself instead of giving up. With a ref it runs on that element (given as "
+        "`el`); without one it runs on the page. NOT REMEMBERED: a step made of code "
+        "cannot be repaired when the site changes, so use a real action for anything that "
+        "belongs in the trail",
+        needs_target=False,
+        value_means="the JavaScript, e.g. `() => document.title` or `el => el.dataset.id`",
+        recordable=False,
+    ),
+    "screenshot": ActionSpec(
+        "screenshot",
+        "save a picture of the page, or of one element. For showing a human what happened",
+        needs_target=False,
+        value_means="where to save it. Leave empty for an automatic name",
+        recordable=False,
+    ),
+    "set_time": ActionSpec(
+        "set_time",
+        "tell the page it is a different date and time. For a dashboard whose numbers "
+        "depend on today — a trail recorded in September otherwise reads the wrong month "
+        "in October",
+        needs_target=False,
+        value_means='a date such as "2026-09-15" or "2026-09-15T10:00:00"',
+        session_handled=True,
+    ),
     "dismiss_when_seen": ActionSpec(
         "dismiss_when_seen",
         "clear something that covers the page whenever it appears — a cookie banner, a "
@@ -298,8 +327,8 @@ def perform(
     target: PWLocator | None = None,
     value: str | None = None,
     second: PWLocator | None = None,
-) -> None:
-    """Do one thing.
+) -> Any:
+    """Do one thing, and hand back whatever it answered.
 
     The element, when one is needed, is already resolved — this function never searches for
     it. Playwright's own actionability checks (visible, stable, enabled, able to receive
@@ -314,7 +343,8 @@ def perform(
     if spec.value_means and value is None and action not in _VALUE_OPTIONAL:
         raise ActionNeedsMore(f"{action} needs a value: {spec.value_means}")
 
-    _RUNNERS[action](page, target, value, second)
+    # Most actions answer nothing. `evaluate` and `screenshot` do, so the return travels.
+    return _RUNNERS[action](page, target, value, second)
 
 
 # Each runner has the same shape so the registry can call them without special cases.
@@ -485,6 +515,32 @@ def _wait_for(page: Page, t: _T | None, value: str | None, second: _T | None) ->
     waits.wait_for(value or "idle", page=page)
 
 
+def _evaluate(page: Page, t: _T | None, value: str | None, second: _T | None) -> Any:
+    """Run the caller's own JavaScript.
+
+    On the element when one is given, on the page otherwise. Playwright serialises the
+    result back, so anything JSON-shaped comes through.
+    """
+    if t is not None:
+        return t.evaluate(value or "el => el")
+    return page.evaluate(value or "() => null")
+
+
+def _screenshot(page: Page, t: _T | None, value: str | None, second: _T | None) -> str:
+    where = Path(value) if value else Path.cwd() / f"cairn-{int(time.time())}.png"
+    where.parent.mkdir(parents=True, exist_ok=True)
+    if t is not None:
+        t.screenshot(path=where)
+    else:
+        page.screenshot(path=where, full_page=True)
+    return str(where)
+
+
+def _set_time(page: Page, t: _T | None, value: str | None, second: _T | None) -> None:
+    # Unreachable: the Session handles it, because the clock belongs to the whole context.
+    raise AssertionError("set_time should have been handled by the session")
+
+
 def _dismiss_when_seen(page: Page, t: _T | None, value: str | None, second: _T | None) -> None:
     # Unreachable: the Session handles it, because it also has to reach memory.
     raise AssertionError("dismiss_when_seen should have been handled by the session")
@@ -533,10 +589,21 @@ _RUNNERS: dict[str, Any] = {
     "switch_tab": _switch_tab,
     "new_tab": _new_tab,
     "dismiss_when_seen": _dismiss_when_seen,
+    "evaluate": _evaluate,
+    "screenshot": _screenshot,
+    "set_time": _set_time,
 }
 
 # These have a sensible default, so a missing value is not an error.
-_VALUE_OPTIONAL = {"press", "dispatch_event", "scroll", "wait", "new_tab", "wait_for"}
+_VALUE_OPTIONAL = {
+    "press",
+    "dispatch_event",
+    "scroll",
+    "wait",
+    "new_tab",
+    "wait_for",
+    "screenshot",
+}
 
 
 # -------------------------------------------------------------------- helpers

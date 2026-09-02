@@ -80,6 +80,7 @@ class Session:
         self.events = emitter or Emitter()
         self.trace: list[TraceEntry] = []
         self._snapshot: Snapshot | None = None
+        self.last_result: Any = None
         self.tool_calls = 0
 
     # ------------------------------------------------------------------ look
@@ -118,6 +119,7 @@ class Session:
         self.browser.last_download = None
         self.browser.last_download_path = None
         self.browser.last_dialog = None
+        self.last_result = None
 
         element = self._perform(action, ref=ref, value=value, to=to)
 
@@ -154,6 +156,8 @@ class Session:
             "navigated": entry.navigated,
             "download": entry.download,
             "dialog": entry.dialog,
+            # `evaluate` and `screenshot` answer something; every other action answers None.
+            "result": self.last_result,
             "saved_to": self.browser.last_download_path,
             "secret": secret,
             "note": (
@@ -190,11 +194,14 @@ class Session:
         # element is still on the page as it was — a click can navigate away, and then
         # there is nothing left to describe.
         element = self.browser.describe(self._element_for(ref)) if spec.needs_target else None
+        # `evaluate` and `screenshot` may name an element without requiring one.
+        if element is None and ref is not None:
+            element = self.browser.describe(self._element_for(ref))
         target = self.browser.locate(element) if element else None
         second = self.browser.locate(self._element_for(to)) if spec.needs_second_target else None
 
         try:
-            actions.perform(
+            self.last_result = actions.perform(
                 action, page=self.browser.page, target=target, value=value, second=second
             )
         except actions.ActionNeedsMore as incomplete:
@@ -219,6 +226,11 @@ class Session:
             if not value:
                 raise ActionFailed("dismiss_when_seen needs a CSS selector")
             self.remember_overlay(value)
+            return
+        if action == "set_time":
+            if not value:
+                raise ActionFailed('set_time needs a date, such as "2026-09-15"')
+            self.browser.set_time(value)
             return
         raise ActionFailed(f"{action} is marked session-handled but nothing handles it")
 

@@ -440,6 +440,10 @@ EXERCISED = {
     "new_tab",
     # Covered in tests/test_hard_page.py, against a real cookie banner.
     "dismiss_when_seen",
+    # Covered in tests/test_escape_hatch.py.
+    "evaluate",
+    "screenshot",
+    "set_time",
 }
 
 
