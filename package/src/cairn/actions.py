@@ -107,7 +107,9 @@ ACTIONS: dict[str, ActionSpec] = {
     ),
     "press": ActionSpec(
         "press",
-        "press a key while the element is focused",
+        "press a key. With a ref it goes to that element; without one it goes to the page, "
+        "which is how you close a modal or a stuck menu with Escape",
+        needs_target=False,
         value_means='a key such as "Enter", "Escape", "Tab", or a combination like "Control+A"',
     ),
     "check": ActionSpec(
@@ -244,6 +246,17 @@ ACTIONS: dict[str, ActionSpec] = {
         value_means='a date such as "2026-09-15" or "2026-09-15T10:00:00"',
         session_handled=True,
     ),
+    "restart_trail": ActionSpec(
+        "restart_trail",
+        "forget the steps recorded so far and start the trail from here. The browser stays "
+        "exactly where it is. USE THIS BEFORE SAVING if you went the wrong way, undid "
+        "something, or recovered from a mistake — everything you did is being written down, "
+        "and a saved mistake gets replayed forever. Explore however you like, then restart "
+        "and walk the task once, cleanly",
+        needs_target=False,
+        recordable=False,
+        session_handled=True,
+    ),
     "dismiss_when_seen": ActionSpec(
         "dismiss_when_seen",
         "clear something that covers the page whenever it appears — a cookie banner, a "
@@ -378,8 +391,14 @@ def _clear(page: Page, t: _T, value: str | None, second: _T | None) -> None:
     t.clear()
 
 
-def _press(page: Page, t: _T, value: str | None, second: _T | None) -> None:
-    t.press(value or "Enter")
+def _press(page: Page, t: _T | None, value: str | None, second: _T | None) -> None:
+    key = value or "Enter"
+    if t is not None:
+        t.press(key)
+        return
+    # No element named: send it to whatever has focus. Closing a modal with Escape is the
+    # normal case, and there is nothing sensible to point at when you do it.
+    page.keyboard.press(key)
 
 
 def _check(page: Page, t: _T, value: str | None, second: _T | None) -> None:
@@ -541,6 +560,11 @@ def _set_time(page: Page, t: _T | None, value: str | None, second: _T | None) ->
     raise AssertionError("set_time should have been handled by the session")
 
 
+def _restart_trail(page: Page, t: _T | None, value: str | None, second: _T | None) -> None:
+    # Unreachable: the Session owns the trail, so it handles this before we get here.
+    raise AssertionError("restart_trail should have been handled by the session")
+
+
 def _dismiss_when_seen(page: Page, t: _T | None, value: str | None, second: _T | None) -> None:
     # Unreachable: the Session handles it, because it also has to reach memory.
     raise AssertionError("dismiss_when_seen should have been handled by the session")
@@ -589,6 +613,7 @@ _RUNNERS: dict[str, Any] = {
     "switch_tab": _switch_tab,
     "new_tab": _new_tab,
     "dismiss_when_seen": _dismiss_when_seen,
+    "restart_trail": _restart_trail,
     "evaluate": _evaluate,
     "screenshot": _screenshot,
     "set_time": _set_time,

@@ -13,10 +13,8 @@ can check itself. Two jobs:
 
 from __future__ import annotations
 
-from urllib.parse import urlparse
-
-from .models import Locator, Playbook, Postcondition, Step
-from .operations import TraceEntry
+from .models import Locator, Playbook, Postcondition, Step, href_path
+from .operations import READ_ACTION, TraceEntry
 
 
 def distill(trace: list[TraceEntry], *, domain: str, task: str) -> Playbook:
@@ -45,11 +43,16 @@ def postcondition_for(entry: TraceEntry) -> Postcondition:
     the page is the weakest of the three — so we only fall back to text when nothing
     better is available.
     """
+    if entry.action == READ_ACTION and entry.element is not None:
+        # A read changes nothing. What has to still be true is that the thing being read
+        # is there at all — if it is gone, the answer would be silently wrong.
+        return Postcondition("element_present", entry.element.css)
+
     if entry.download:
         return Postcondition("download", entry.download)
 
     if entry.navigated or entry.action == "goto":
-        return Postcondition("url_contains", _path_of(entry.url_after))
+        return Postcondition("url_contains", href_path(entry.url_after))
 
     if entry.action == "fill" and entry.element is not None:
         # Nothing visibly changes when you type, so assert the field is still there.
@@ -61,7 +64,7 @@ def postcondition_for(entry: TraceEntry) -> Postcondition:
     if entry.element is not None:
         return Postcondition("element_present", entry.element.css)
 
-    return Postcondition("url_contains", _path_of(entry.url_after))
+    return Postcondition("url_contains", href_path(entry.url_after))
 
 
 def locators_for(entry: TraceEntry) -> list[Locator]:
@@ -72,14 +75,3 @@ def locators_for(entry: TraceEntry) -> list[Locator]:
     if entry.element is None:
         return []
     return entry.element.locators()
-
-
-def _path_of(url: str) -> str:
-    """Match on the path, not the whole URL.
-
-    The demo site carries `?variant=b` in the query string, and a real site will append
-    session ids and tracking parameters. Pinning a step to a full URL would make it break
-    for reasons that have nothing to do with the site changing.
-    """
-    parsed = urlparse(url)
-    return parsed.path or url

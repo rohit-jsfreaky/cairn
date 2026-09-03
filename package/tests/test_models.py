@@ -63,8 +63,24 @@ class TestStepRanking:
 
         assert step.health == 1.0
 
-    def test_a_step_with_no_locators_has_no_health(self):
-        assert step_with().health == 0.0
+    def test_a_step_with_no_locators_is_neutral_not_broken(self):
+        """This test used to assert 0.0, and 0.0 was the bug.
+
+        A `goto` carries its destination in the step rather than in a locator, so it has
+        none — and scoring that zero meant every trail containing one was permanently
+        part-broken, and one step closer to being retired for staleness. Seen live: a
+        brand new working GitHub trail reported health 0.25.
+        """
+        assert step_with().health == 0.5
+
+    def test_a_step_with_no_locators_earns_a_record_of_its_own(self):
+        step = step_with()
+        step.record_hit()
+        assert step.health == 1.0
+
+        for _ in range(3):
+            step.record_miss()
+        assert step.health == 0.0
 
 
 class TestPlaybookStaleness:

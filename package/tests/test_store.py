@@ -88,15 +88,61 @@ class TestPlaybookRoundTrip:
         assert best.hits == 9
         assert best.misses == 1
 
-    def test_one_site_cannot_hold_two_conflicting_trails(self, store: CairnStore):
+    def test_one_site_can_hold_several_trails(self, store: CairnStore):
+        """This test used to assert the opposite, and the opposite was a bug.
+
+        Trails were keyed by domain alone, so a second task overwrote the first. It looked
+        like a design choice until GitHub: asking about a second repository destroyed the
+        trail for the first one.
+        """
         store.save_playbook(make_playbook())
 
         second = make_playbook()
         second.task = "download last year's invoice"
         store.save_playbook(second)
 
+        # One site, still. Two trails on it.
         assert store.list_sites() == [DOMAIN]
-        assert store.load_playbook(DOMAIN).task == "download last year's invoice"
+        assert store.trails_for(DOMAIN) == sorted([TASK, "download last year's invoice"])
+
+        assert store.load_playbook(DOMAIN, TASK).task == TASK
+        assert store.load_playbook(DOMAIN, second.task).task == second.task
+
+    def test_saving_the_same_task_twice_overwrites_it(self, store: CairnStore):
+        """Improving a trail must replace it, not pile up copies of it."""
+        store.save_playbook(make_playbook())
+        again = make_playbook()
+        again.steps = again.steps[:1]
+        store.save_playbook(again)
+
+        assert store.trails_for(DOMAIN) == [TASK]
+        assert len(store.load_playbook(DOMAIN, TASK).steps) == 1
+
+    def test_a_site_with_one_trail_needs_no_task(self, store: CairnStore):
+        """A caller that does not name a task can only mean the single one that exists."""
+        store.save_playbook(make_playbook())
+        assert store.load_playbook(DOMAIN).task == TASK
+
+    def test_a_site_with_several_trails_needs_to_be_asked_properly(self, store: CairnStore):
+        """Guessing between two tasks would run the wrong one, which is worse than asking."""
+        store.save_playbook(make_playbook())
+        second = make_playbook()
+        second.task = "download last year's invoice"
+        store.save_playbook(second)
+
+        assert store.load_playbook(DOMAIN) is None
+
+    def test_forgetting_a_site_forgets_every_trail_on_it(self, store: CairnStore):
+        """The gate has to mean all of them, or a site is only half forgotten."""
+        store.save_playbook(make_playbook())
+        second = make_playbook()
+        second.task = "download last year's invoice"
+        store.save_playbook(second)
+
+        assert store.forget_site(DOMAIN) is True
+        assert store.trails_for(DOMAIN) == []
+        assert store.load_playbook(DOMAIN, TASK) is None
+        assert store.load_playbook(DOMAIN, second.task) is None
 
 
 class TestSiteKnowledge:
@@ -203,10 +249,30 @@ class TestFreshProcess:
 class TestHealth:
     def test_a_mostly_broken_playbook_reports_itself_stale(self):
         playbook = make_playbook()
+        playbook.steps.append(
+            Step(
+                index=3,
+                intent="open the receipt",
+                action="click",
+                postcondition=Postcondition("url_contains", "/receipt"),
+                locators=[Locator("css", "#receipt", hits=4)],
+            )
+        )
         for step in playbook.steps:
             step.locators = [Locator("css", "#gone", hits=0, misses=5)]
 
         assert playbook.is_stale is True
+
+    def test_a_very_short_trail_is_never_declared_stale(self):
+        """One broken step out of one is 100%, and retiring on that is how a healthy site
+        gets declared rebuilt. Found on GitHub: asking about a different repository
+        destroyed the trail for the whole site. A short trail is repaired instead, which
+        is recoverable — retiring is not."""
+        playbook = make_playbook()
+        playbook.steps = playbook.steps[:1]
+        playbook.steps[0].locators = [Locator("css", "#gone", hits=0, misses=5)]
+
+        assert playbook.is_stale is False
 
     def test_a_working_playbook_is_not_stale(self):
         assert make_playbook().is_stale is False

@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import actions
+from . import actions, reads
 from .browser import ACCEPT, Browser
 from .events import (
     DriftDetected,
@@ -37,8 +37,8 @@ from .events import (
     StepPassed,
     StepStarted,
 )
-from .models import Locator, Playbook, RunMetrics, Step
-from .operations import check_postcondition
+from .models import Locator, Playbook, Postcondition, RunMetrics, Step, href_path
+from .operations import READ_ACTION, check_postcondition
 from .secrets import MissingSecret
 from .secrets import resolve as resolve_secret
 from .store import CairnStore
@@ -90,6 +90,13 @@ class ReplayResult:
     """Files this run actually wrote to disk. A "download the invoice" task is not done
     until there is a real file, so replay reports paths rather than just filenames."""
 
+    answers: dict[str, Any] = field(default_factory=dict)
+    """What the remembered reads said, keyed by the intent they were recorded under.
+
+    This is what makes a warm run *answer* rather than merely arrive. A trail for "how many
+    open issues" that navigates to the page and stops is worth almost nothing — the caller
+    still has to read the number itself, which was the whole cost we set out to remove."""
+
     stale: bool = False
     """The trail is past repairing — the site was rebuilt, not tweaked."""
 
@@ -114,6 +121,20 @@ class NoTrailError(RuntimeError):
     """
 
 
+class NeedsTask(NoTrailError):
+    """The site is remembered, but the caller did not say which of its tasks it wants.
+
+    Deliberately NOT the same as `NoTrailError`. "Which one?" and "never been here" are
+    opposite situations that demand opposite responses, and reporting the second when the
+    first was true made a host AI re-explore a site it already knew — overwriting what was
+    there. Subclassing keeps old handlers working while letting new ones tell them apart.
+    """
+
+    def __init__(self, message: str, *, tasks: list[str]):
+        super().__init__(message)
+        self.tasks = tasks
+
+
 class Executor:
     """Replays a remembered trail. Reads memory, writes back what it learned."""
 
@@ -130,14 +151,17 @@ class Executor:
 
     _domain: str = ""
 
-    def run(self, domain: str, *, start_url: str | None = None) -> ReplayResult:
-        """Walk the remembered trail for one site.
+    def run(
+        self, domain: str, *, task: str | None = None, start_url: str | None = None
+    ) -> ReplayResult:
+        """Walk the remembered trail for one task on one site.
 
         `start_url` overrides the first step's destination. That is how the demo points a
         trail learned on the normal site at the redesigned one, without editing memory.
         """
         self._domain = domain
-        playbook = self._load(domain)
+        self.answers: dict[str, Any] = {}
+        playbook = self._load(domain, task)
         started = time.perf_counter()
         self.browser.saved_files.clear()
         self.browser.last_download = None
@@ -218,7 +242,12 @@ class Executor:
             )
 
         self._finish(playbook, metrics, started, succeeded=True)
-        return ReplayResult(ok=True, metrics=metrics, saved_files=list(self.browser.saved_files))
+        return ReplayResult(
+            ok=True,
+            metrics=metrics,
+            saved_files=list(self.browser.saved_files),
+            answers=dict(self.answers),
+        )
 
     # ------------------------------------------------------------ one step
 
@@ -245,13 +274,35 @@ class Executor:
         self.browser.last_download_path = None
 
         if step.action == "goto":
-            destination = start_url if (start_url and step.index == 1) else step.value
+            sent_elsewhere = bool(start_url) and step.index == 1
+            destination = start_url if sent_elsewhere else step.value
             self.browser.goto(destination or "")
-            passed = check_postcondition(self.browser, step.postcondition)
+
+            # When the caller redirects the first step, the stored check is about the old
+            # address and cannot apply. Checking it anyway reported `needs_repair` on a
+            # page that had loaded perfectly — and the step it named could not be repaired,
+            # because a `goto` has no control to point at.
+            expected = (
+                Postcondition("url_contains", href_path(destination or ""))
+                if sent_elsewhere
+                else step.postcondition
+            )
+            passed = check_postcondition(self.browser, expected)
+
             elapsed = int((time.perf_counter() - began) * 1000)
             if passed:
+                step.record_hit()
                 return self._StepOutcome(matched_by="url", duration_ms=elapsed)
+            step.record_miss()
             return self._StepOutcome(reason="the page did not arrive where it should have")
+
+        # A read of the whole page — its title, its url, the errors it logged — names no
+        # element, so there is nothing to find and nothing that can go stale.
+        if step.action == READ_ACTION and not step.locators:
+            self._read_answer(step, None)
+            step.record_hit()
+            elapsed = int((time.perf_counter() - began) * 1000)
+            return self._StepOutcome(matched_by="page", duration_ms=elapsed)
 
         outcome = self._StepOutcome()
         # A step that answered a confirm box last time expects the same wording this time.
@@ -300,6 +351,17 @@ class Executor:
         outcome.reason = "every remembered way of finding this went stale"
         return outcome
 
+    def _read_answer(self, step: Step, target) -> None:
+        """Replay a remembered read and keep what it said.
+
+        This is what makes a warm run *answer* rather than merely arrive. A trail for
+        "how many open issues" is worth nothing if it navigates to the page and stops.
+        """
+        kind, _, attribute = (step.value or "text").partition(":")
+        self.answers[step.intent] = reads.read(
+            kind, page=self.browser.page, target=target, attribute=attribute or None
+        )
+
     def _dialog_changed(self, step: Step) -> str | None:
         """Did a confirm box appear whose wording is not what was recorded?
 
@@ -343,6 +405,10 @@ class Executor:
         The value comes from `_value_for`, so a password field is filled from this machine
         rather than from memory — memory never held it.
         """
+        if step.action == READ_ACTION:
+            self._read_answer(step, target)
+            return
+
         spec = actions.spec_for(step.action)
         value = self._value_for(step, domain) if spec.name in _TEXT_ENTRY else step.value
         actions.perform(
@@ -361,7 +427,7 @@ class Executor:
         and each repair would be built on a trail that is mostly wrong anyway.
         """
         broken = sum(1 for step in playbook.steps if step.health < 0.5)
-        self.store.retire_playbook(playbook.domain)
+        self.store.retire_playbook(playbook.domain, playbook.task)
         self.events.emit(
             MemoryWrite(
                 category="playbook",
@@ -431,14 +497,45 @@ class Executor:
             candidates=[self.browser.describe(element).to_dict() for element in snapshot.elements],
         )
 
-    def apply_repair(self, domain: str, step_index: int, locator: Locator) -> Playbook:
+    def repair_from_ref(
+        self, domain: str, step_index: int, ref: str, *, task: str | None = None
+    ) -> Playbook:
+        """Fix a step by pointing at the control that should have been used.
+
+        Better than handing over one selector: the element is described in full, so the
+        step gets back every durable way of finding it — test id, link target, label, role,
+        text — exactly as a fresh recording would. A repair that stored a single positional
+        path left the step more fragile than when it was first learned.
+        """
+        snapshot = self.browser.snapshot()
+        element = snapshot.by_ref(ref)
+        if element is None:
+            raise NoTrailError(f"no control {ref!r} on this page — look at it again")
+
+        found = self.browser.describe(element).locators()
+        if not found:
+            raise NoTrailError(f"{ref!r} offers no durable way of being found again")
+        return self.apply_repair(domain, step_index, found, task=task)
+
+    def apply_repair(
+        self,
+        domain: str,
+        step_index: int,
+        locator: Locator | list[Locator],
+        *,
+        task: str | None = None,
+    ) -> Playbook:
         """Save the fix the host AI worked out, for that one step only.
 
-        The new locator goes to the front with a hit already recorded, and the dead ones
+        The new locators go to the front with a hit already recorded, and the dead ones
         are kept rather than dropped — a locator that fails today may be the one that
         works again after the site is reverted, and its miss count is evidence.
         """
-        playbook = self._load(domain)
+        fresh = [locator] if isinstance(locator, Locator) else list(locator)
+        if not fresh:
+            raise NoTrailError("a repair needs at least one way of finding the element")
+
+        playbook = self._load(domain, task)
         step = next(s for s in playbook.steps if s.index == step_index)
         before = step.ranked_locators()[0].value if step.locators else "(nothing)"
 
@@ -446,15 +543,17 @@ class Executor:
         # A locator with a real track record survives one miss and stays as a fallback.
         step.locators = [existing for existing in step.locators if not existing.is_dead]
 
-        locator.record_hit()
-        step.locators.insert(0, locator)
+        # Only the first is credited with the hit — it is the one actually confirmed.
+        fresh[0].record_hit()
+        step.locators = fresh + step.locators
         step.repairs += 1
         playbook.repairs += 1
         playbook.touch()
 
+        after = fresh[0].value
         self.store.save_playbook(playbook)
-        self.store.journal_repair(domain, step_index, before, locator.value)
-        self.events.emit(RepairSaved(index=step_index, before=before, after=locator.value))
+        self.store.journal_repair(domain, step_index, before, after)
+        self.events.emit(RepairSaved(index=step_index, before=before, after=after))
         self.events.emit(
             MemoryWrite(category="playbook", name=domain, detail=f"repaired step {step_index}")
         )
@@ -462,15 +561,26 @@ class Executor:
 
     # -------------------------------------------------------------- shared
 
-    def _load(self, domain: str) -> Playbook:
-        playbook = self.store.load_playbook(domain)
+    def _load(self, domain: str, task: str | None = None) -> Playbook:
+        playbook = self.store.load_playbook(domain, task)
         self.events.emit(MemoryRead(category="playbook", name=domain, found=playbook is not None))
-        if playbook is None:
-            raise NoTrailError(
-                f"nothing remembered for {domain} — there is no trail to follow. "
-                f"Explore it once and save, or restore the memory."
+        if playbook is not None:
+            return playbook
+
+        # A site can hold several trails. "Which one?" and "never been here" are opposite
+        # situations that demand opposite responses, so they must never share an error.
+        # Reporting the second when the first was true is what made a host AI re-explore
+        # a site it already knew, and save over what was there.
+        known = self.store.trails_for(domain)
+        if known:
+            raise NeedsTask(
+                f"{domain} is remembered, but not this task. Say which one you mean.",
+                tasks=known,
             )
-        return playbook
+        raise NoTrailError(
+            f"nothing remembered for {domain} — there is no trail to follow. "
+            f"Explore it once and save, or restore the memory."
+        )
 
     def _finish(
         self,

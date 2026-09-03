@@ -153,6 +153,123 @@ own Playwright script. The real reason is repairability, and not recording it so
 **Full parity is deferred, not dropped** — Phase 7 in MASTER-PLAN.md. The rule for
 promoting one of the 94 to a real action: a real website needed it. Not a guess.
 
+### Phase 1g started — GitHub, the first real site (2026-09-02)
+
+Driven by a clean Claude Code session in `D:\my_projects\cairn-test`, with no knowledge of
+this project. Full write-up in `cairn-test/FINDINGS.md`.
+
+**What held up:** `cairn_run` was called first — no curl, no WebFetch. The snapshot handled
+GitHub completely, including a frame nobody expected (every ref on the second repo was
+`f1e...`). `cairn_note` immediately caught something no locator could: the issues tab badge
+is a cached count and disagrees with the live filter.
+
+**Six bugs, four of which could not have been found on a page we wrote ourselves:**
+
+1. **P0 — the trail could not produce the answer.** `cairn_save` stored one step: the
+   `goto`. The number came from a read, and reads were never recorded. So a saved trail
+   walked to a page and stopped, and the host AI had to work the answer out again every
+   time — which is the entire cost this project exists to remove. Reads can now be
+   remembered as steps, and `cairn_run` returns `answers`.
+2. **P0 — one trail per domain.** `save_playbook` keyed on the domain alone, so
+   `github.com` could hold exactly one task ever. Now keyed `domain::task-slug`.
+   `forget_site` clears every trail on the site, or the gate would only half hold.
+3. **P1 — a false "the site was rebuilt", which deleted the trail.** One broken step out of
+   one is 100%, so any failure on a short trail retired it. There is now a floor: below
+   three steps a trail is repaired, never retired. Repair is recoverable; retiring is not.
+4. **P1 — link targets came back wrapped in quotes.** Playwright writes
+   `- /url: "#start-of-content"`. We kept the quotes, so `href_path` returned `"`. The
+   `structural` locator is our second most durable kind and it was silently useless on
+   every GitHub link.
+5. **Found while fixing 2** — `cairn_sites` called `load_playbook(domain)`, which now
+   returns nothing when a site has several trails. Every multi-task site would have
+   vanished from the listing.
+6. **Found while fixing 1** — a page-level read (`title`, `url`) names no element, so it
+   has no locators, and replay could not run it at all.
+
+**A test that asserted the bug.** `test_one_site_cannot_hold_two_conflicting_trails`
+checked that saving a second task *overwrites the first*. It passed for two days. It was
+written when one-trail-per-domain looked like a design choice, and GitHub proved it was a
+defect. Now `test_one_site_can_hold_several_trails`.
+
+**Still to do in 1g:** PostHog (needs Rohit to sign in once, then the Google/SSO and
+React-dashboard path is proven), and the three-run measurement — cold, warm, and warm after
+`cairn_forget`.
+
+### The warm path is proven on a real website (2026-09-02)
+
+```
+cairn_run(site="github.com", task="count open issues on elysiajs/elysia-openapi")
+  ok  known  2 steps  1391 ms  model_calls: 0  pages_read: 0
+  answers: {"number of open issues shown on the Issues tab": "Issues\n117"}
+```
+
+One call, 1.4 seconds, no model, and the answer came back by itself — on a site nobody
+here controls. Health read 1.0 for a trail that had run and 0.5 for one saved but not yet
+replayed, which is exactly right.
+
+**Two more bugs, both from that run:**
+
+- **A remembered trail was reported as an unknown site**, so the host AI re-explored and
+  saved over it. Two faults: a task had to be worded *identically* to match, and "which of
+  these trails?" was reported as "never seen this site". Now matched on meaningful words,
+  and `NeedsTask` reports `known: true` with the list.
+- **Found by a test while fixing that:** with one trail on a site it was returned for *any*
+  request. "Cancel my subscription" would have run "count open issues".
+
+**Three tests so far have turned out to be asserting a bug** — one trail per domain, zero
+health for a locator-less step, and now the single-trail shortcut. Tests protect against
+regressions. Only a real site protects against being wrong about the design.
+
+### PostHog: the sign-in works, and a dashboard number is reachable (2026-09-02)
+
+**Google accepted the window.** Playwright's bundled Chromium sets `navigator.webdriver =
+true` and launches with `--enable-automation`, and Google blocks OAuth on anything that
+says so. In Cairn's login flow that claim was false — the person signs in themselves, in a
+window they can see, and Cairn never touches the password. Now: real Chrome, automation
+flags off, `HeadlessChrome` stripped from the user agent. Verified false in both modes.
+
+**Then the real problem.** PostHog keeps its numbers in plain `div`s with no role, so the
+snapshot correctly does not offer them as controls — and they have no `ref`. `ref` took
+only refs, so the AI fell back to `page_text` and the saved answer became **the whole
+page**: five thousand characters with `22` somewhere inside. Every warm run would hand that
+back for a model to search. Dashboard numbers are the main use case, so this was fatal to
+it.
+
+`ref` now takes a CSS selector too. The AI tried exactly that, twice, unprompted — the
+strongest evidence there is that it should have worked.
+
+**The escape hatch paid for itself on its first real dashboard.** The AI used
+`action="evaluate"` on its own to inspect the DOM when refs failed, and got the five metric
+tiles out. Nobody predicted that page, and nobody had to.
+
+**One flaky test fixed properly rather than retried:** the download flush ran before
+`browser.text()`, and the download event could land during that read — queued, never saved,
+but reported as done. Moved the flush to just before the trace entry. Five clean runs.
+
+### PostHog: the AI built its own selector (2026-09-03)
+
+After the wording change it stopped reaching for `page_text` and did this instead, which is
+the whole design working together:
+
+1. Saw the metric tiles had no `ref`.
+2. Used **`evaluate`** — the escape hatch — to walk the DOM and find where the number lived.
+3. Used it again to find the container holding only the Visitors tile.
+4. Built `div.rounded.border.bg-surface-primary:has-text("Visitors") div.text-4xl`.
+5. **Verified it matched exactly one element** before committing.
+6. Remembered that read, so the answer is `"22"` — not five thousand characters.
+7. Wrote a site note with the selector *and the reason not to use page_text*.
+
+Nobody predicted that page. The escape hatch is what let it through, which was the whole
+argument for building it rather than 94 named actions.
+
+**BUG 16, found by checking rather than assuming:** `describe` overwrote the AI's selector
+with a path computed from the page — `div > div > div:nth-of-type(2)`. Theirs is anchored
+to meaning and survives a tile being added; ours does not. We were silently replacing the
+good locator with the fragile one. Both are now kept, theirs ranked first.
+
+**Deletion gate proven on a real logged-in site:** memory gone, full re-exploration forced,
+and the login survived — it lives in the browser profile, not the trail.
+
 ## Next action
 
 **Phase 2.5 - the browsing layer.** Read `BROWSING.md` first, then `PLAN.md` section 2.5.
@@ -463,6 +580,9 @@ is the biggest remaining gap between "demo" and "product".
 ## Session log
 
 - **2026-08-31** — folder created, plan written. No code.
+- **2026-09-02** — Phase 1g on GitHub, the first real site. Six bugs, two of them P0:
+  a trail could not produce an answer, and a site could hold only one task. 368 engine +
+  60 MCP pass. One existing test turned out to be asserting the bug.
 - **2026-09-02** — The escape hatch: `evaluate` (never recorded), console and
   network diagnostics, `set_time`, `screenshot`. 21 tests; 354 engine + 56 MCP
   pass. Full Playwright parity deferred to Phase 7, not dropped.

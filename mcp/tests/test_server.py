@@ -111,7 +111,15 @@ class TestTheWarmCall:
         db = mcp_server.cairn_tools.store  # same database, brand new server object
         del db
 
-        second = build_server(db_path=str(tmp_path / "memory.db"), headless=True)
+        # profile="" like every other test. Without it this reached into the real
+        # signed-in profile, which only worked while a silent fallback let a second
+        # process share one Chrome profile — and that fallback was signing users out.
+        second = build_server(
+            db_path=str(tmp_path / "memory.db"),
+            headless=True,
+            downloads=str(tmp_path / "downloads"),
+            profile="",
+        )
         try:
             result = call(second, "cairn_run", site=demo_server, url=f"{demo_server}/")
         finally:

@@ -24,7 +24,7 @@ from typing import Any
 
 from cairn import actions, reads
 from cairn.browser import DEFAULT_PROFILE, domain_of
-from cairn.executor import Executor, NoTrailError
+from cairn.executor import Executor, NeedsTask, NoTrailError
 from cairn.models import Locator, SiteKnowledge
 from cairn.operations import ActionFailed, Session
 from cairn.store import CairnStore
@@ -39,6 +39,9 @@ MAX_ELEMENTS = 60
 # rather than something read off a single element. It lives here because "what can I do on
 # this page" is a question about the tool surface, not about the DOM.
 PAGE = "page"
+
+# Remembering a read of the whole page makes a trail that answers with the whole page.
+WHOLE_PAGE = "page_text"
 
 
 def _act_description() -> str:
@@ -65,8 +68,9 @@ def _act_description() -> str:
         "month's invoice\". Stored in memory, and it is what a future repair is explained "
         "by, so write it for a human rather than as a selector.\n"
         "  action: one of the names above.\n"
-        "  ref: which control, from cairn_read(kind='page'). Not needed for the "
-        "page-level actions.\n"
+        "  ref: which element. Either a `ref` from cairn_read(kind='page'), or a "
+        "CSS selector you write yourself for something that has no ref. Not needed "
+        "for the page-level actions.\n"
         "  value: the text, key, option, url or seconds the action needs.\n"
         "  to: the second control, for `drag`."
     )
@@ -81,10 +85,22 @@ def _read_description() -> str:
         "Kinds:\n"
         f"  {PAGE} — the controls on this page, each with a `ref` to act on; "
         "gives back a list; no ref needed\n" + reads.catalogue() + "\n\n"
+        "REMEMBER THE READ THAT IS THE ANSWER. Pass remember=True and an `intent` in "
+        "plain words for the read that actually answers the task — the number, the "
+        "status, the total. Without it the saved trail walks to the page and stops, and "
+        "the next run has to work the answer out all over again. Ordinary looking-around "
+        "reads should leave it off.\n\n"
         "Args:\n"
         "  kind: one of the names above.\n"
-        "  ref: which control, from kind='page'.\n"
-        "  attribute: the attribute name, only for kind='attribute'."
+        "  ref: which element. Either a `ref` from kind='page', OR a CSS selector "
+        "you write yourself. A dashboard keeps its numbers in plain divs with no "
+        "role, so those get no ref at all — name them with a selector such as "
+        "\"[data-attr='visitors-tile'] .big\". Do that rather than page_text, which "
+        "hands back the entire page for you to search through on every future run.\n"
+        "  attribute: the attribute name, only for kind='attribute'.\n"
+        "  remember: keep this read in the trail, so cairn_run returns it next time.\n"
+        "  intent: why you are reading it, in plain words. This is the name the answer "
+        "comes back under."
     )
 
 
@@ -203,7 +219,7 @@ def build_server(
     # ------------------------------------------------------------ warm path
 
     @server.tool()
-    def cairn_run(site: str, url: str | None = None) -> dict[str, Any]:
+    def cairn_run(site: str, task: str | None = None, url: str | None = None) -> dict[str, Any]:
         """Do something on a website. USE THIS FOR ANY WEBSITE TASK, and use it FIRST.
 
         Downloading an invoice or report, checking a dashboard, signing in, filling a form,
@@ -218,7 +234,8 @@ def build_server(
         reasoning. If it has not, the result tells you exactly how to proceed.
 
         Three possible answers:
-          ok=True                  the task is done. Report the result and stop.
+          ok=True                  the task is done. `answers` holds what the trail
+                                   read — report it and stop.
           needs_repair=True        the site changed. ONE step broke and is described in
                                    `repair`. Pick the right control from `repair.candidates`
                                    and call cairn_repair. Do not re-explore the whole site.
@@ -227,14 +244,32 @@ def build_server(
 
         Args:
             site: The site, as a domain or a full URL (e.g. "billing.acme.com").
+            task: Which task, in the same plain words it was saved under. Only needed when
+                a site has more than one — the result says so and lists them.
             url: Optional. Where the first step should go, if it differs from what was
                 learned — useful when the same site is reached by a different entry URL.
         """
         key = domain_of(site) if "://" in site else site
         try:
             result = tools.worker.submit(
-                lambda browser: Executor(tools.store, browser).run(key, start_url=url)
+                lambda browser: Executor(tools.store, browser).run(key, task=task, start_url=url)
             )
+        except NeedsTask as ambiguous:
+            # NOT "unknown". Saying that made a host AI explore a site it already knew and
+            # save over the trail that was there.
+            return {
+                "ok": False,
+                "known": True,
+                "needs_task": True,
+                "site": key,
+                "tasks": ambiguous.tasks,
+                "message": str(ambiguous),
+                "next": (
+                    "Cairn already knows this site. Call cairn_run again with `task` set "
+                    "to whichever of `tasks` matches what was asked. Do NOT explore — the "
+                    "trail is already there."
+                ),
+            }
         except NoTrailError as unknown:
             facts = _facts_for(tools, key)
             return {
@@ -305,7 +340,7 @@ def build_server(
                 "next": (
                     "Only this one step broke; everything before it still worked. Choose "
                     "the control from repair.candidates that matches repair.intent, then "
-                    "call cairn_repair with its css. Then call cairn_run again."
+                    "call cairn_repair with its REF. Then call cairn_run again."
                 ),
             }
 
@@ -319,35 +354,64 @@ def build_server(
             "model_calls": 0,
             "pages_read": 0,
             "saved_files": result.saved_files,
+            # What the remembered reads said. This is the answer — report it and stop.
+            "answers": result.answers,
         }
 
     @server.tool()
-    def cairn_repair(site: str, step_index: int, css: str) -> dict[str, Any]:
+    def cairn_repair(
+        site: str,
+        step_index: int,
+        ref: str | None = None,
+        css: str | None = None,
+        task: str | None = None,
+    ) -> dict[str, Any]:
         """Teach Cairn the new way to find ONE step that broke, then remember it forever.
 
-        Call this only after cairn_run came back with needs_repair. Pass the `css` of the
-        control you picked from repair.candidates. Cairn puts it at the front of that
-        step's locators and saves it, so the next run is fast again with no repair.
+        Call this only after cairn_run came back with needs_repair.
+
+        PASS `ref`, NOT `css`. Give the `ref` of the control you picked from
+        repair.candidates. Cairn then looks that element up and stores every durable way of
+        finding it — its test id, its link target, its label, its role, its text — exactly
+        as it would if the step were being learned for the first time. A repair that stores
+        one CSS path leaves the step more fragile than when it started, which is backwards.
+
+        `css` still works for the rare case where the control you want is not in the
+        candidate list at all.
 
         Args:
             site: The same site you passed to cairn_run.
             step_index: repair.step_index from the cairn_run result.
-            css: The css of your chosen control, taken from repair.candidates.
+            ref: The `ref` of your chosen control, from repair.candidates. Preferred.
+            css: A CSS selector instead, when nothing in the candidates fits.
+            task: Which task, if the site has more than one trail.
         """
         key = domain_of(site) if "://" in site else site
+        if not ref and not css:
+            return err("say which control to use: a `ref` from repair.candidates, or a `css`")
+
         try:
-            playbook = tools.worker.submit(
-                lambda browser: Executor(tools.store, browser).apply_repair(
-                    key, step_index, Locator("css", css)
+            if ref:
+                playbook = tools.worker.submit(
+                    lambda browser: Executor(tools.store, browser).repair_from_ref(
+                        key, step_index, ref, task=task
+                    )
                 )
-            )
+            else:
+                playbook = tools.worker.submit(
+                    lambda browser: Executor(tools.store, browser).apply_repair(
+                        key, step_index, Locator("css", css or ""), task=task
+                    )
+                )
         except Exception as failure:  # noqa: BLE001
             return err(failure)
 
+        step = next((s for s in playbook.steps if s.index == step_index), None)
         return {
             "ok": True,
             "site": key,
             "step_index": step_index,
+            "ways_to_find_it": [locator.describe() for locator in step.locators] if step else [],
             "repairs_total": playbook.repairs,
             "next": "Fixed and saved. Call cairn_run again to finish the task.",
         }
@@ -359,10 +423,14 @@ def build_server(
         Useful for answering "what do you already know how to do?".
         """
         try:
+            # One row per TRAIL, not per site. A site can hold several tasks, and
+            # listing by site alone would hide every one after the first.
             sites = []
             for domain in tools.store.list_sites():
-                playbook = tools.store.load_playbook(domain)
-                if playbook is not None:
+                for task in tools.store.trails_for(domain) or [None]:
+                    playbook = tools.store.load_playbook(domain, task)
+                    if playbook is None:
+                        continue
                     sites.append(
                         {
                             "site": domain,
@@ -581,6 +649,8 @@ def build_server(
         kind: str = PAGE,
         ref: str | None = None,
         attribute: str | None = None,
+        remember: bool = False,
+        intent: str = "",
     ) -> dict[str, Any]:
         try:
             session = tools.session()
@@ -590,9 +660,28 @@ def build_server(
                 return {"ok": True, "kind": PAGE, **page}
 
             answer = tools.worker.submit(
-                lambda _browser: session.read(kind, ref=ref, attribute=attribute)
+                lambda _browser: session.read(
+                    kind, ref=ref, attribute=attribute, remember=remember, intent=intent
+                )
             )
-            return {"ok": True, "kind": kind, "ref": ref, "value": answer}
+            reply: dict[str, Any] = {
+                "ok": True,
+                "kind": kind,
+                "ref": ref,
+                "value": answer,
+                "remembered": remember,
+            }
+            # Said at the moment it happens, not only in the tool description. A host AI
+            # remembered a whole-page read on PostHog despite the description, because the
+            # tiles had no ref and page_text looked like the only way through.
+            if remember and kind == WHOLE_PAGE:
+                reply["warning"] = (
+                    "This trail's answer is now the entire page, and every future run will "
+                    "hand back thousands of characters for you to search. If you can name "
+                    "what you actually want with a CSS selector — pass it as `ref` — read "
+                    "that instead and remember that one."
+                )
+            return reply
         except (ActionFailed, reads.UnknownRead, reads.ReadNeedsMore) as refused:
             return err(refused)
         except Exception as failure:  # noqa: BLE001
@@ -605,6 +694,12 @@ def build_server(
         Call this once the task is finished. Cairn turns what you did into a trail with a
         check on every step, and stores it. From now on the same task is one cairn_run
         call with no thinking at all.
+
+        EVERYTHING you did is written down, including the parts that went wrong. If you
+        took a wrong turn, undid something, or clicked your way out of a stuck menu, those
+        become steps too — and a saved mistake is replayed forever. Before saving, call
+        cairn_act(action="restart_trail") and walk the task once, cleanly. The result below
+        lists every step it kept, so check it says what you meant to do.
 
         Args:
             task: What was accomplished, in plain words, e.g. "download this month's
@@ -625,6 +720,10 @@ def build_server(
             "site": playbook.domain,
             "task": playbook.task,
             "steps": len(playbook.steps),
+            # Shown so the AI can see whether its own fumbling got written down. On
+            # PostHog a saved trail began "close the stuck context menu", which failed on
+            # the first replay and took the whole run with it.
+            "trail": [f"{s.index}. {s.action} — {s.intent}" for s in playbook.steps],
             "message": (
                 f"Learned {playbook.domain} in {len(playbook.steps)} steps. "
                 f"Next time, one cairn_run call does all of it."

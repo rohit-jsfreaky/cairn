@@ -27,6 +27,10 @@ LocatorKind = Literal[
     "css",
 ]
 
+# Below this many steps, the broken-share is meaningless and a trail is never retired
+# for being stale. It is repaired instead, which is recoverable.
+MIN_STEPS_TO_JUDGE_STALE = 3
+
 # How much a single confirmed hit or miss moves a locator's health.
 _HIT_WEIGHT = 1.0
 _MISS_WEIGHT = 2.0  # a miss is worse news than a hit is good news
@@ -42,6 +46,18 @@ def href_path(href: str) -> str:
     """
     parsed = urlparse(href)
     return parsed.path or href
+
+
+def _confidence(hits: int, misses: int) -> float:
+    """0.0 to 1.0, from a track record. Nothing unproven is ever trusted or condemned.
+
+    Shared by locators and by steps that have none, so the two cannot drift apart.
+    """
+    attempts = hits + misses
+    if attempts == 0:
+        return 0.5
+    score = (hits * _HIT_WEIGHT) - (misses * _MISS_WEIGHT)
+    return max(0.0, min(1.0, score / (attempts * _HIT_WEIGHT)))
 
 
 def utc_now() -> str:
@@ -79,11 +95,7 @@ class Locator:
     @property
     def confidence(self) -> float:
         """0.0 to 1.0. Unproven locators start neutral rather than perfect."""
-        attempts = self.hits + self.misses
-        if attempts == 0:
-            return 0.5
-        score = (self.hits * _HIT_WEIGHT) - (self.misses * _MISS_WEIGHT)
-        return max(0.0, min(1.0, score / (attempts * _HIT_WEIGHT)))
+        return _confidence(self.hits, self.misses)
 
     def record_hit(self) -> None:
         self.hits += 1
@@ -206,12 +218,31 @@ class Step:
     running the replay. A password in a memory file is a password in a backup, a sync
     folder and a support ticket."""
 
+    hits: int = 0
+    misses: int = 0
+    """This step's own record, used only when it has no locators to speak for it.
+
+    A `goto` carries its destination in the step, not in a locator, and a page-level read
+    names no element either. Scoring those zero — which is what "no locators" used to
+    mean — made every trail containing one permanently part-broken."""
+
     @property
     def health(self) -> float:
-        """The best locator we have is how healthy the step is."""
-        if not self.locators:
-            return 0.0
-        return max(loc.confidence for loc in self.locators)
+        """How much this step can be trusted, 0 to 1.
+
+        Normally the best locator we have. A step with no locators is not broken — it
+        simply has nothing to find — so it keeps its own record instead, and starts
+        neutral rather than at zero.
+        """
+        if self.locators:
+            return max(loc.confidence for loc in self.locators)
+        return _confidence(self.hits, self.misses)
+
+    def record_hit(self) -> None:
+        self.hits += 1
+
+    def record_miss(self) -> None:
+        self.misses += 1
 
     def ranked_locators(self) -> list[Locator]:
         """Most trustworthy first. Replay walks this order and stops at the first hit."""
@@ -227,6 +258,8 @@ class Step:
             "locators": [loc.to_dict() for loc in self.locators],
             "repairs": self.repairs,
             "secret": self.secret,
+            "hits": self.hits,
+            "misses": self.misses,
             "dialog_message": self.dialog_message,
             "dialog_choice": self.dialog_choice,
             "health": round(self.health, 3),
@@ -243,6 +276,8 @@ class Step:
             locators=[Locator.from_dict(loc) for loc in raw.get("locators", [])],
             repairs=raw.get("repairs", 0),
             secret=raw.get("secret"),
+            hits=raw.get("hits", 0),
+            misses=raw.get("misses", 0),
             dialog_message=raw.get("dialog_message"),
             dialog_choice=raw.get("dialog_choice"),
         )
@@ -270,9 +305,17 @@ class Playbook:
 
     @property
     def is_stale(self) -> bool:
-        """More than half the trail is broken — the site has moved on, not drifted."""
+        """More than half the trail is broken — the site has moved on, not drifted.
+
+        A very short trail is exempt. One broken step out of one is 100%, and retiring on
+        that is how a perfectly healthy site gets declared rebuilt: found on GitHub, where
+        asking about a different repo destroyed the trail for the whole site. A short trail
+        gets repaired instead, which is recoverable; retiring is not.
+        """
         if not self.steps:
             return True
+        if len(self.steps) < MIN_STEPS_TO_JUDGE_STALE:
+            return False
         broken = sum(1 for step in self.steps if step.health < 0.5)
         return broken > len(self.steps) / 2
 

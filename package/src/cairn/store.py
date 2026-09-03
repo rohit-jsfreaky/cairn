@@ -31,6 +31,65 @@ from sibyl_memory_client import MemoryClient, NotFoundError
 from .models import Playbook, RunMetrics, SiteKnowledge
 
 PLAYBOOK = "playbook"
+
+# A trail is named `domain::task-slug`. Keying on the domain alone meant one task per site.
+#
+# Not "|": Sibyl rejects it in an identifier, along with < > ; " ` and "..". A domain never
+# contains "::", so splitting on it is unambiguous.
+KEY_SEPARATOR = "::"
+
+# Long enough to tell two tasks apart, short enough to read in a listing.
+MAX_SLUG = 60
+
+# How much of a request's wording must be shared with a saved task before they are treated
+# as the same job. Low enough to survive rephrasing, high enough that "download the
+# invoice" never matches "cancel the subscription".
+MATCH_THRESHOLD = 0.4
+
+# Words too common to tell two tasks apart. "the invoice" and "the subscription" share
+# "the" and nothing that matters.
+_NOISE = frozenset(
+    [
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "do",
+        "does",
+        "for",
+        "from",
+        "get",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "many",
+        "me",
+        "my",
+        "of",
+        "on",
+        "or",
+        "please",
+        "show",
+        "that",
+        "the",
+        "them",
+        "then",
+        "there",
+        "this",
+        "to",
+        "what",
+        "when",
+        "where",
+        "which",
+        "with",
+    ]
+)
 SITE_KNOWLEDGE = "site_knowledge"
 
 
@@ -56,22 +115,79 @@ class CairnStore:
     # ---------------------------------------------------------------- playbooks
 
     def save_playbook(self, playbook: Playbook) -> None:
-        """WARM write. One trail per domain, overwritten in place as it improves."""
-        self._memory.set_entity(PLAYBOOK, playbook.domain, playbook.to_dict())
+        """WARM write. One trail per TASK per site, overwritten as it improves.
 
-    def load_playbook(self, domain: str) -> Playbook | None:
+        Keyed by task as well as domain. Keying on the domain alone meant a site could
+        hold exactly one task ever — found on GitHub, where asking about a second repo
+        collided with the first.
+        """
+        key = trail_key(playbook.domain, playbook.task)
+        self._memory.set_entity(PLAYBOOK, key, playbook.to_dict())
+
+    def load_playbook(self, domain: str, task: str | None = None) -> Playbook | None:
         """WARM read. `None` means we have never walked this site — or it was forgotten.
 
         The warm path lives or dies on this call. If it returns `None`, replay has
         nothing to follow and the caller has to explore from scratch.
+
+        With a task, the matching trail. Without one, the site's only trail — because a
+        caller who does not name a task can only mean the single one that exists. If there
+        are several, it has to say which; `trails_for` lists them.
         """
+        if task:
+            body = self._read_entity_body(PLAYBOOK, trail_key(domain, task))
+            if body:
+                return Playbook.from_dict(body)
+
+        # Trails saved before trails were keyed by task are named by domain alone.
         body = self._read_entity_body(PLAYBOOK, domain)
-        return Playbook.from_dict(body) if body else None
+        if body:
+            return Playbook.from_dict(body)
+
+        keys = self._keys_for(domain)
+
+        # A caller who names no task can only mean the single one that exists. A caller who
+        # DOES name one has to be matched against it — otherwise a site holding "count open
+        # issues" would happily run that when asked to "cancel my subscription".
+        if len(keys) == 1 and not task:
+            body = self._read_entity_body(PLAYBOOK, keys[0])
+            return Playbook.from_dict(body) if body else None
+
+        # Nobody words a request the same way twice. "how many open issues does
+        # microsoft/playwright have" has to find the trail saved as "count open issues on
+        # microsoft/playwright", or the memory may as well not be there.
+        if task:
+            closest = best_match(task, self.trails_for(domain))
+            if closest:
+                body = self._read_entity_body(PLAYBOOK, trail_key(domain, closest))
+                return Playbook.from_dict(body) if body else None
+        return None
+
+    def trails_for(self, domain: str) -> list[str]:
+        """The tasks this site has trails for, so a caller can say which one it means."""
+        found = []
+        for key in self._keys_for(domain):
+            body = self._read_entity_body(PLAYBOOK, key)
+            if body and body.get("task"):
+                found.append(body["task"])
+        return sorted(found)
+
+    def _keys_for(self, domain: str) -> list[str]:
+        """Every live trail key belonging to one site."""
+        entities = self._memory.list_entities(category=PLAYBOOK)
+        return sorted(
+            entity["name"]
+            for entity in entities
+            if not self._is_archived(entity) and domain_of_key(entity["name"]) == domain
+        )
 
     def list_sites(self) -> list[str]:
-        """Every domain Cairn currently knows a trail for."""
+        """Every domain Cairn currently knows a trail for.
+
+        Domains, not trail keys — one site with four tasks is still one site.
+        """
         entities = self._memory.list_entities(category=PLAYBOOK)
-        return sorted(e["name"] for e in entities if not self._is_archived(e))
+        return sorted({domain_of_key(e["name"]) for e in entities if not self._is_archived(e)})
 
     def search_similar(self, query: str, *, limit: int = 5) -> list[str]:
         """Full-text search across stored trails, using Sibyl's FTS5 index.
@@ -120,7 +236,7 @@ class CairnStore:
         """COLD read. Used by the CLI and the dashboard to show memory working."""
         return self._memory.read_events(limit=limit)
 
-    def retire_playbook(self, domain: str) -> bool:
+    def retire_playbook(self, domain: str, task: str | None = None) -> bool:
         """Archive only the trail, keeping what we know about the site.
 
         Used when a playbook goes stale: the steps are worthless because the site was
@@ -128,7 +244,8 @@ class CairnStore:
         is all still true. This is what makes relearning cheaper than a first visit.
         """
         try:
-            self._memory.archive_entity(PLAYBOOK, domain, reason="stale, site was rebuilt")
+            key = trail_key(domain, task) if task else domain
+            self._memory.archive_entity(PLAYBOOK, key, reason="stale, site was rebuilt")
         except NotFoundError:
             return False
 
@@ -151,6 +268,15 @@ class CairnStore:
         Returns True if anything was actually forgotten.
         """
         forgotten = False
+
+        # Every trail for the site, not just one. A site with four tasks has four trails,
+        # and "forget this site" has to mean all of them or the gate does not hold.
+        for key in self._keys_for(domain):
+            try:
+                self._memory.archive_entity(PLAYBOOK, key, reason="cairn forget")
+                forgotten = True
+            except NotFoundError:
+                continue
 
         for category in (PLAYBOOK, SITE_KNOWLEDGE):
             try:
@@ -185,3 +311,60 @@ class CairnStore:
     @staticmethod
     def _is_archived(entity: dict[str, Any]) -> bool:
         return str(entity.get("status", "")).lower() == "archived"
+
+
+def trail_key(domain: str, task: str | None) -> str:
+    """The memory name for one task on one site.
+
+    A site holds many trails. Without the task in the key they overwrite each other, which
+    is what happened the first time Cairn was asked about a second GitHub repo.
+    """
+    if not task:
+        return domain
+    return f"{domain}{KEY_SEPARATOR}{_slug(task)}"
+
+
+def domain_of_key(key: str) -> str:
+    """The site a trail key belongs to. Trails saved before this are named by domain."""
+    return key.split(KEY_SEPARATOR, 1)[0]
+
+
+def _slug(task: str) -> str:
+    """A task in plain words, reduced to something safe to use as a name."""
+    kept = [character if character.isalnum() else "-" for character in task.lower()]
+    slug = "".join(kept)
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug.strip("-")[:MAX_SLUG] or "task"
+
+
+def best_match(wanted: str, known: list[str]) -> str | None:
+    """Which saved task is the one being asked for, if any.
+
+    Compares the words that carry meaning, so rewording survives but two genuinely
+    different jobs never collide. Returns nothing when the best candidate is weak or when
+    two are equally good — guessing between them would run the wrong task, which is worse
+    than asking.
+    """
+    scored = sorted(((_overlap(wanted, candidate), candidate) for candidate in known), reverse=True)
+    if not scored:
+        return None
+
+    best, winner = scored[0]
+    if best < MATCH_THRESHOLD:
+        return None
+    runner_up = scored[1][0] if len(scored) > 1 else 0.0
+    return winner if best > runner_up else None
+
+
+def _overlap(wanted: str, candidate: str) -> float:
+    """How much of the request's meaning the saved task accounts for, 0 to 1."""
+    asked = _meaningful(wanted)
+    if not asked:
+        return 0.0
+    return len(asked & _meaningful(candidate)) / len(asked)
+
+
+def _meaningful(text: str) -> set[str]:
+    words = "".join(character if character.isalnum() else " " for character in text.lower())
+    return {word for word in words.split() if word not in _NOISE}

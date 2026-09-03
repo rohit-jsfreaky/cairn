@@ -58,6 +58,31 @@ MAX_DIAGNOSTICS = 50
 # usually one failed request rather than a missing element.
 FAILED_STATUS = 400
 
+# The real Chrome on this machine, not Playwright's bundled Chromium. Sites that gate
+# sign-in — Google above all — treat Chromium as suspicious no matter how it behaves.
+REAL_CHROME = "chrome"
+BUNDLED = "chromium"
+
+# Which browser made this profile, written inside it. A profile holds the sign-ins a person
+# did by hand, and Chromium cannot read a session Chrome wrote — so opening it with the
+# other one loses the login silently, which is worse than not opening it at all.
+PROFILE_OWNER = ".cairn-browser"
+
+# Playwright says this, and only this, when the browser is not installed. Every other
+# failure is a different problem and must not be mistaken for it.
+NOT_INSTALLED = "is not found"
+
+# Stops the browser advertising that a program is driving it. Without these,
+# `navigator.webdriver` is true and Google refuses to let the USER sign in by hand, which
+# is the one thing Cairn cannot do for them.
+QUIET_ARGS = ["--disable-blink-features=AutomationControlled"]
+NOISY_DEFAULTS = ["--enable-automation"]
+
+# Headless Chrome puts "HeadlessChrome" in its user agent, which some sites refuse on
+# sight. The window is genuinely not being watched by anyone; that is a fact about the
+# screen, not about who is typing, and it is no business of the site's.
+HEADLESS_TELL = "HeadlessChrome"
+
 # What to do with a confirm box. Accepting is the default because Playwright's own
 # default — dismissing — silently cancels saves and submits.
 ACCEPT = "accept"
@@ -98,6 +123,10 @@ _SIGNED_OUT_HINTS = ("/login", "/signin", "/sign-in", "/sign_in", "/auth", "/sso
 # every look would cost a round trip per element, and most elements are never touched.
 _DESCRIBE_JS = """
 (el) => {
+  // How far up to look for a unique path. Five was not nearly enough: PostHog's real
+  // path to one button was fifteen levels deep.
+  const MAX_DEPTH = 15;
+
   const testIdOf = (node) => {
     const names = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy'];
     for (const name of names) {
@@ -117,6 +146,9 @@ _DESCRIBE_JS = """
     return aria ? aria.trim() : null;
   };
 
+  // Walks up until the path matches exactly ONE element, and gives up rather than
+  // returning one that matches several. A selector that finds the wrong element is worse
+  // than no selector: replay takes the first match and clicks something else entirely.
   const cssOf = (node) => {
     const doc = node.ownerDocument;
     if (node.id && doc.querySelectorAll(`#${CSS.escape(node.id)}`).length === 1) {
@@ -126,19 +158,38 @@ _DESCRIBE_JS = """
       const sel = `${node.tagName.toLowerCase()}[name="${node.name}"]`;
       if (doc.querySelectorAll(sel).length === 1) return sel;
     }
+
     const parts = [];
     let walker = node;
-    while (walker && walker.nodeType === 1 && parts.length < 5) {
+    while (walker && walker.nodeType === 1 && parts.length < MAX_DEPTH) {
       const tag = walker.tagName.toLowerCase();
-      if (tag === 'html' || tag === 'body') break;
       const parent = walker.parentElement;
-      if (!parent) break;
+
+      // An id anywhere up the chain anchors everything below it in one step.
+      if (walker !== node && walker.id
+          && doc.querySelectorAll(`#${CSS.escape(walker.id)}`).length === 1) {
+        parts.unshift(`#${CSS.escape(walker.id)}`);
+        return parts.join(' > ');
+      }
+
+      if (tag === 'html' || tag === 'body' || !parent) break;
+
       const siblings = Array.from(parent.children).filter(c => c.tagName === walker.tagName);
       const index = siblings.indexOf(walker) + 1;
       parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${index})` : tag);
+
+      // As soon as it picks out one element, it is done. Going further only adds
+      // brittleness — every extra level is another thing a redesign can move.
+      const built = parts.join(' > ');
+      try {
+        if (doc.querySelectorAll(built).length === 1) return built;
+      } catch (bad) {
+        return '';
+      }
+
       walker = parent;
     }
-    return parts.join(' > ');
+    return '';
   };
 
   const type = (el.getAttribute('type') || '').toLowerCase();
@@ -162,6 +213,15 @@ _DESCRIBE_JS = """
   };
 }
 """
+
+
+def _is_missing_browser(problem: BaseException) -> bool:
+    """Is this "the browser is not installed", or something else entirely?
+
+    Everything else — a profile already open, a crash on startup — needs its own message.
+    Treating them all as "Chrome is missing" is what silently signed a user out.
+    """
+    return NOT_INSTALLED in str(problem)
 
 
 def _keep(kept: list[str], line: str) -> None:
@@ -251,35 +311,28 @@ class Browser:
 
     def start(self) -> Browser:
         self._playwright = sync_playwright().start()
+        self._channel: str | None = REAL_CHROME
 
         if self._profile is not None:
             self._profile.mkdir(parents=True, exist_ok=True)
             # Chrome allows one process per profile. A clear message beats a raw crash.
             try:
-                self._context = self._playwright.chromium.launch_persistent_context(
-                    str(self._profile),
-                    headless=self._headless,
-                    accept_downloads=True,
-                    viewport=VIEWPORT,
-                    has_touch=self._touch,
-                    **self._context_options(),
-                )
-            except Exception as clash:
+                self._context = self._open_profile()
+            except ProfileInUse:
                 self._playwright.stop()
                 self._playwright = None
-                raise ProfileInUse(
-                    "Cairn's browser profile is already open in another window. Close the "
-                    "sign-in window (or the other Cairn run) and try again."
-                ) from clash
+                raise
             self._browser = None
             pages = self._context.pages
             self._page = pages[0] if pages else self._context.new_page()
         else:
-            self._browser = self._playwright.chromium.launch(headless=self._headless)
+            self._browser = self._launch()
+            honest = self._honest_user_agent()
             self._context = self._browser.new_context(
                 accept_downloads=True,
                 viewport=VIEWPORT,
                 has_touch=self._touch,
+                **({"user_agent": honest} if honest else {}),
                 **self._context_options(),
             )
             self._page = self._context.new_page()
@@ -296,6 +349,90 @@ class Browser:
         # continues in is a decision to record, not to guess.
         self._context.on("page", self._remember_tab)
         return self
+
+    def _launch_options(self) -> dict[str, Any]:
+        """How every browser Cairn starts is launched."""
+        options: dict[str, Any] = {
+            "headless": self._headless,
+            "args": QUIET_ARGS,
+            "ignore_default_args": NOISY_DEFAULTS,
+        }
+        if self._channel:
+            options["channel"] = self._channel
+        return options
+
+    def _launch(self) -> Any:
+        """Real Chrome if this machine has it, the bundled Chromium if not.
+
+        Nothing is remembered in a browser with no profile, so downgrading quietly is fine
+        here — a browser that starts is worth more than one that is perfectly disguised.
+        """
+        try:
+            return self._playwright.chromium.launch(**self._launch_options())
+        except PlaywrightError as refused:
+            if not _is_missing_browser(refused):
+                raise
+            self._channel = None
+            return self._playwright.chromium.launch(**self._launch_options())
+
+    def _open_profile(self) -> Any:
+        """Open the saved profile with the browser that made it.
+
+        Never the other one. Chromium cannot read a session Chrome wrote, so switching
+        browsers turns a signed-in profile into a signed-out one without saying anything —
+        and signing in is the one thing Cairn asks a person to do themselves.
+        """
+        self._channel = self._owner_of_profile()
+        settings = {
+            **self._launch_options(),
+            "accept_downloads": True,
+            "viewport": VIEWPORT,
+            "has_touch": self._touch,
+            **self._context_options(),
+        }
+        try:
+            context = self._playwright.chromium.launch_persistent_context(
+                str(self._profile), **settings
+            )
+        except PlaywrightError as refused:
+            if self._channel == REAL_CHROME and _is_missing_browser(refused):
+                # Only now is downgrading safe: this profile has never been opened.
+                self._channel = None
+                return self._open_profile()
+            raise ProfileInUse(
+                "Cairn could not open its browser profile. Usually that means it is "
+                "already open — close the sign-in window, or the other Cairn run, and try "
+                "again."
+            ) from refused
+
+        self._remember_owner()
+        return context
+
+    def _owner_of_profile(self) -> str | None:
+        """The browser this profile was made with, or Chrome for a profile with no history."""
+        marker = self._profile / PROFILE_OWNER if self._profile else None
+        if marker and marker.is_file():
+            return None if marker.read_text(encoding="utf-8").strip() == BUNDLED else REAL_CHROME
+        return REAL_CHROME
+
+    def _remember_owner(self) -> None:
+        """Write down which browser opened this profile, so the next run agrees."""
+        if self._profile is None:
+            return
+        marker = self._profile / PROFILE_OWNER
+        owner = self._channel or BUNDLED
+        if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != owner:
+            marker.write_text(owner, encoding="utf-8")
+
+    def _honest_user_agent(self) -> str | None:
+        """The browser's own user agent, minus the word that gets it turned away."""
+        if not self._headless or self._browser is None:
+            return None
+        blank = self._browser.new_context()
+        page = blank.new_page()
+        reported = page.evaluate("() => navigator.userAgent")
+        blank.close()
+        return reported.replace(HEADLESS_TELL, "Chrome") if HEADLESS_TELL in reported else None
 
     def _context_options(self) -> dict[str, Any]:
         """The context settings that are the same however the browser was launched."""
@@ -545,8 +682,11 @@ class Browser:
         return selectors
 
     def _describe_ref(self, ref: str) -> dict[str, Any] | None:
+        return self._describe_locator(self.page.locator(f"aria-ref={ref}"))
+
+    def _describe_locator(self, target: PWLocator) -> dict[str, Any] | None:
         try:
-            return self.page.locator(f"aria-ref={ref}").evaluate(_DESCRIBE_JS)
+            return target.evaluate(_DESCRIBE_JS)
         except PlaywrightError:
             return None
 
@@ -557,9 +697,18 @@ class Browser:
         only the elements actually acted on ever need them. A ref is good for one snapshot;
         these are what get written down.
         """
-        described = self._describe_ref(element.ref)
+        described = self._describe_locator(self.locate(element))
         if not described:
             return element
+
+        # Never overwrite a selector the caller wrote themselves. Theirs is anchored to
+        # meaning; the one computed here is a positional path like
+        # `div > div > div:nth-of-type(2)`, which breaks the moment a tile is added above
+        # it. Keep both, theirs first — that is the whole point of ranked locators.
+        if element.selector:
+            element.fallback_css = described.get("css") or ""
+            described.pop("css", None)
+
         for key, value in described.items():
             if value is not None and hasattr(element, key):
                 setattr(element, key, value)
@@ -648,13 +797,18 @@ class Browser:
         return None
 
     def locate(self, element: Element) -> PWLocator:
-        """Turn a snapshot element into something Playwright can act on.
+        """Turn an element into something Playwright can act on.
 
         `aria-ref` resolves through shadow roots and across frame boundaries on its own, so
         nothing here needs to know where the element lives. That is only true within the
         snapshot the ref came from — which is why acting always re-reads it, and why refs
         never reach memory.
+
+        An element named by a CSS selector instead is resolved by that selector. Dashboards
+        keep their numbers in plain `div`s with no role, which get no ref at all.
         """
+        if element.selector:
+            return self.page.locator(element.selector).first
         return self.page.locator(f"aria-ref={element.ref}").first
 
     def settle(self) -> None:

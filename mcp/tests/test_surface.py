@@ -212,3 +212,58 @@ def test_reading_never_reports_what_is_in_a_password_box(mcp_server, on_the_page
     )
     page = call(mcp_server, "cairn_read", kind="page")
     assert "hunter2" not in str(page)
+
+
+# ------------------------------------------ what the GitHub test found (P0)
+
+
+def test_a_remembered_read_comes_back_from_a_warm_run(mcp_server, on_the_page, demo_server) -> None:
+    """The bug GitHub exposed: a saved trail walked to a page and then stopped, so the
+    answer had to be worked out again on every single run."""
+    call(
+        mcp_server,
+        "cairn_read",
+        kind="text",
+        ref=ref_named(on_the_page, "Sign in"),
+        remember=True,
+        intent="read the sign in button",
+    )
+    call(mcp_server, "cairn_save", task="read the sign in button")
+
+    result = call(mcp_server, "cairn_run", site=demo_server, task="read the sign in button")
+    assert result["answers"]["read the sign in button"] == "Sign in"
+
+
+def test_an_ordinary_read_is_not_remembered(mcp_server, on_the_page) -> None:
+    result = call(mcp_server, "cairn_read", kind="text", ref=ref_named(on_the_page, "Sign in"))
+    assert result["remembered"] is False
+
+
+def test_the_read_description_says_to_remember_the_answer(described) -> None:
+    """A host AI that does not know this saves trails that cannot answer anything."""
+    assert "REMEMBER THE READ THAT IS THE ANSWER" in described["cairn_read"]
+
+
+def test_cairn_run_takes_a_task(described) -> None:
+    """One site, many tasks. Keying on the site alone meant github.com could hold one."""
+    assert "task" in described["cairn_run"]
+
+
+def test_remembering_the_whole_page_says_what_that_costs(mcp_server, on_the_page) -> None:
+    """Seen on PostHog: the tiles had no ref, so the AI remembered a whole-page read and
+    the trail's answer became five thousand characters with the number buried inside."""
+    result = call(mcp_server, "cairn_read", kind="page_text", remember=True, intent="the number")
+    assert "warning" in result
+    assert "CSS selector" in result["warning"]
+
+
+def test_an_ordinary_whole_page_read_is_not_warned_about(mcp_server, on_the_page) -> None:
+    """Looking around is fine. It is only remembering it that makes a poor trail."""
+    assert "warning" not in call(mcp_server, "cairn_read", kind="page_text")
+
+
+def test_the_kinds_list_steers_away_from_the_whole_page(described) -> None:
+    """The AI reads the kinds list when it chooses, not the argument notes underneath."""
+    text = described["cairn_read"]
+    assert "ALMOST NEVER THE RIGHT ANSWER" in text
+    assert "THE ONE YOU USUALLY WANT" in text

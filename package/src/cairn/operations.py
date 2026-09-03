@@ -21,6 +21,7 @@ from typing import Any
 from playwright.sync_api import Error as PlaywrightError
 
 from . import actions, reads
+from . import snapshot as aria
 from .browser import LATEST_TAB, Browser, Element, Snapshot, domain_of
 from .events import Emitter, MemoryWrite
 from .models import Playbook, Postcondition, SiteKnowledge, utc_now
@@ -34,6 +35,9 @@ Action = str
 # guessing one fixed delay: too short is flaky, too long makes every other step slow.
 DOWNLOAD_GRACE_MS = 2000
 DOWNLOAD_POLL_MS = 50
+
+# A remembered read is a step whose job is to produce a value.
+READ_ACTION = "read"
 
 # Actions that put text into a field, and so might be putting a password into one.
 _TEXT_ENTRY = {"fill", "type"}
@@ -126,11 +130,14 @@ class Session:
         # A password is remembered as "there is a password here", never as the password.
         secret = secret_name(element) if action in _TEXT_ENTRY else None
 
-        # The download event can arrive after the click has already returned, so catch
-        # any straggler before recording what happened.
+        text_after = self.browser.text()
+
+        # Catch stragglers LAST, immediately before the entry is written. The download
+        # event can arrive after the click returns, and reading the page takes long enough
+        # for it to land there — so flushing any earlier queued the file without ever
+        # saving it, and the step reported a download that was not on disk.
         self.browser.flush_downloads()
 
-        text_after = self.browser.text()
         entry = TraceEntry(
             intent=intent,
             action=action,
@@ -227,6 +234,9 @@ class Session:
                 raise ActionFailed("dismiss_when_seen needs a CSS selector")
             self.remember_overlay(value)
             return
+        if action == "restart_trail":
+            self.trace.clear()
+            return
         if action == "set_time":
             if not value:
                 raise ActionFailed('set_time needs a date, such as "2026-09-15"')
@@ -254,14 +264,35 @@ class Session:
         )
 
     def _element_for(self, ref: str | None) -> Element:
+        """Find what the caller means, by ref or by CSS selector.
+
+        A dashboard keeps its numbers in plain `div`s with no role, and those are correctly
+        not offered as controls — so they have no ref, and a selector is the only handle
+        there is. Refusing one meant the numbers could not be read at all.
+        """
         if ref is None:
-            raise ActionFailed("this action needs a ref from look()")
-        if self._snapshot is None:
-            self._snapshot = self.browser.snapshot()
-        element = self._snapshot.by_ref(ref)
-        if element is None:
-            raise ActionFailed(f"no element {ref} on this page — call look() again")
-        return element
+            raise ActionFailed("this action needs a ref from cairn_read, or a CSS selector")
+
+        if aria.is_ref(ref):
+            if self._snapshot is None:
+                self._snapshot = self.browser.snapshot()
+            element = self._snapshot.by_ref(ref)
+            if element is None:
+                raise ActionFailed(f"no element {ref} on this page — look at it again")
+            return element
+
+        return self._element_by_selector(ref)
+
+    def _element_by_selector(self, selector: str) -> Element:
+        """Build an element from a CSS selector the caller wrote themselves."""
+        try:
+            found = self.browser.page.locator(selector)
+            if found.count() == 0:
+                raise ActionFailed(f"nothing on this page matches {selector!r}")
+        except PlaywrightError as bad:
+            raise ActionFailed(f"{selector!r} is not a selector this page understands") from bad
+
+        return Element(ref=selector, role="", name="", selector=selector, css=selector)
 
     # ------------------------------------------------------------------ read
 
@@ -271,6 +302,8 @@ class Session:
         *,
         ref: str | None = None,
         attribute: str | None = None,
+        remember: bool = False,
+        intent: str = "",
     ) -> Any:
         """Look at the page without changing it.
 
@@ -278,9 +311,12 @@ class Session:
         there", "did the total change", "is the submit button live yet" — all of it is a
         read, and none of it was possible before.
 
-        Nothing is written to the trace: a read has no effect, so replaying one would
-        achieve nothing. What a read is *for* is choosing the postcondition that does get
-        stored.
+        Exploring reads are not written down — most of them are just looking around, and
+        replaying those would achieve nothing.
+
+        `remember=True` makes this read a step. Use it for the read that IS the answer:
+        the number the task was about. Without it a saved trail walks to a page and then
+        stops, and the caller has to work the answer out again every single time.
         """
         self.tool_calls += 1
         try:
@@ -288,11 +324,31 @@ class Session:
         except reads.UnknownRead as unknown:
             raise ActionFailed(str(unknown)) from unknown
 
-        target = self.browser.locate(self._element_for(ref)) if spec.needs_target else None
+        element = self.browser.describe(self._element_for(ref)) if spec.needs_target else None
+        target = self.browser.locate(element) if element else None
         try:
-            return reads.read(kind, page=self.browser.page, target=target, attribute=attribute)
+            answer = reads.read(kind, page=self.browser.page, target=target, attribute=attribute)
         except reads.ReadNeedsMore as incomplete:
             raise ActionFailed(str(incomplete)) from incomplete
+
+        if remember:
+            self._remember_read(kind, intent, element, attribute)
+        return answer
+
+    def _remember_read(
+        self, kind: str, intent: str, element: Element | None, attribute: str | None
+    ) -> None:
+        """Write a read into the trail, so replay hands back the answer."""
+        self.trace.append(
+            TraceEntry(
+                intent=intent or f"read the {kind}",
+                action=READ_ACTION,
+                value=f"{kind}:{attribute}" if attribute else kind,
+                element=element,
+                url_before=self.browser.page.url,
+                url_after=self.browser.page.url,
+            )
+        )
 
     # ---------------------------------------------------------------- verify
 

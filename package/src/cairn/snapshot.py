@@ -83,6 +83,10 @@ _ATTR = re.compile(r"\[([^\]]*)\]")
 # `f1e2` means element e2 inside frame 1. A ref with no `f` prefix is on the main page.
 _FRAME_OF_REF = re.compile(r"^f(\d+)e\d+$")
 
+# What a ref looks like: `e4`, or `f1e2` inside a frame. Anything else a caller passes is
+# a CSS selector, because that is what people reach for when an element has no ref.
+_LOOKS_LIKE_REF = re.compile(r"^f?\d*e\d+$")
+
 
 @dataclass
 class Element:
@@ -97,6 +101,13 @@ class Element:
     ref: str
     role: str
     name: str
+    selector: str = ""
+    """How to find this element, when it did not come from a snapshot.
+
+    A snapshot element is found by its `ref`. One named by a CSS selector — because it has
+    no role and so is not offered as a control — is found by that selector instead. Plain
+    `div`s holding the numbers are the normal case on a dashboard."""
+
     href: str | None = None
     clickable: bool = False
     frame: str | None = None
@@ -120,6 +131,13 @@ class Element:
     placeholder: str | None = None
     title: str | None = None
     alt: str | None = None
+    fallback_css: str = ""
+    """A second, positional path to the same element, worked out from the page.
+
+    Only used when the caller named the element with their own selector. Theirs is anchored
+    to meaning — `:has-text("Visitors")` survives tiles being reordered — so it goes first,
+    and this one is the spare for the day the class names change."""
+
     value: str | None = None
     """What the field holds — but only ever `"(filled)"` until `describe` has run.
 
@@ -159,6 +177,8 @@ class Element:
             found.append(self._pin(Locator("text", self.name)))
         if self.css:
             found.append(Locator("css", self.css))
+        if self.fallback_css and self.fallback_css != self.css:
+            found.append(Locator("css", self.fallback_css))
 
         for locator in found:
             locator.frame = self.frame
@@ -254,7 +274,7 @@ def parse(snapshot: str, *, frames: dict[str, str] | None = None) -> list[Elemen
         # Checked before the main pattern, which only matches lines that start with a role.
         if stripped.startswith("- /url:"):
             if pending_url_for is not None:
-                pending_url_for.href = stripped[len("- /url:") :].strip()
+                pending_url_for.href = _unquote(stripped[len("- /url:") :].strip())
             continue
 
         match = _LINE.match(line.rstrip())
@@ -292,6 +312,11 @@ def parse(snapshot: str, *, frames: dict[str, str] | None = None) -> list[Elemen
 
     _count_twins(found)
     return found
+
+
+def is_ref(handle: str) -> bool:
+    """Is this one of our refs, or a CSS selector somebody typed?"""
+    return bool(_LOOKS_LIKE_REF.match(handle.strip()))
 
 
 def frame_number(ref: str) -> str | None:
@@ -369,6 +394,18 @@ def _attributes(raw: str) -> dict[str, str]:
 def _frame_number(ref: str) -> str | None:
     match = _FRAME_OF_REF.match(ref)
     return match.group(1) if match else None
+
+
+def _unquote(url: str) -> str:
+    """Playwright wraps a url in quotes when it contains anything awkward.
+
+    Found on GitHub: `- /url: "#start-of-content"`. Keeping the quotes made `href_path`
+    return `"` , so every `structural` locator on the page was silently useless — and
+    structural is the second most durable kind we have.
+    """
+    if len(url) >= 2 and url[0] == url[-1] and url[0] in "\"'":
+        return url[1:-1]
+    return url
 
 
 def _unescape(name: str) -> str:

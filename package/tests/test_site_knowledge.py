@@ -166,7 +166,7 @@ class TestTheStaleRule:
 
         Executor(store, browser).run("acme.com")
 
-        assert store.load_playbook("acme.com") is None
+        assert store.load_playbook("acme.com", "t") is None
 
     def test_but_the_site_facts_are_kept_and_handed_back(self, store: CairnStore, browser: Browser):
         """This is the whole point of retiring rather than forgetting."""

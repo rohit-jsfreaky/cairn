@@ -48,7 +48,9 @@ class ReadSpec:
 READS: dict[str, ReadSpec] = {
     "text": ReadSpec(
         "text",
-        "the words inside one element — a number, a status, an error message",
+        "the words inside one element — a number, a status, an error message. THE ONE YOU "
+        "USUALLY WANT. `ref` takes a CSS selector as well as a ref, so this works even for "
+        "something with no ref of its own",
         "text",
     ),
     "all_text": ReadSpec(
@@ -122,8 +124,13 @@ READS: dict[str, ReadSpec] = {
     ),
     "page_text": ReadSpec(
         "page_text",
-        "the readable text of the whole page. A last resort — prefer `text` with an "
-        "element, which is smaller and far more precise",
+        "the readable text of the WHOLE page. ALMOST NEVER THE RIGHT ANSWER. If you "
+        "remember this one, the trail's answer becomes thousands of characters of "
+        "navigation and tables with the real number buried inside, handed back on every "
+        "future run for you to search again. If what you want has no `ref` — a dashboard "
+        "number is usually a plain div and will not have one — pass a CSS SELECTOR as "
+        "`ref` instead, such as \"[data-attr='visitors-tile'] .big\". Use this kind only "
+        "to look around while exploring",
         "text",
         needs_target=False,
     ),

@@ -440,6 +440,9 @@ EXERCISED = {
     "new_tab",
     # Covered in tests/test_hard_page.py, against a real cookie banner.
     "dismiss_when_seen",
+    # Covered in tests/test_answers.py, against the PostHog trail that recorded its own
+    # recovery from a stuck menu.
+    "restart_trail",
     # Covered in tests/test_escape_hatch.py.
     "evaluate",
     "screenshot",
@@ -458,3 +461,15 @@ def test_playwright_error_is_still_raised(lab: Browser) -> None:
     with pytest.raises(PlaywrightError):
         lab.page.set_default_timeout(300)
         do(lab, "click", "#does-not-exist")
+
+
+def test_press_without_an_element_goes_to_the_page(lab: Browser) -> None:
+    """Closing a modal or a stuck menu with Escape has nothing sensible to point at. On
+    PostHog the host AI needed exactly this and had to aim it at some element instead."""
+    lab.page.set_content(
+        "<p id='log'>nothing yet</p>"
+        "<script>document.addEventListener('keydown', e => "
+        "{ document.getElementById('log').textContent = 'page key:' + e.key; });</script>"
+    )
+    actions.perform("press", page=lab.page, value="Escape")
+    assert log_says(lab) == "page key:Escape"
