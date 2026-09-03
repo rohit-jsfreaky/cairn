@@ -127,3 +127,71 @@ class TestTheDeletionGate:
 
         assert store.load_playbook("other.example.com") is not None
         assert store.load_playbook(learned_site) is None
+
+
+class TestTheGateSurvivesASharedMemory:
+    """A commons is memory too, so it could quietly become a back door around the gate.
+
+    These are the tests that keep "delete the memory and the project stops working" true
+    rather than nearly true.
+    """
+
+    def test_replay_never_reads_the_commons(self):
+        """The rule the whole gate rests on, checked mechanically.
+
+        If `Executor` could fall back to a shared trail, this entire file would be proving
+        nothing: a judge would forget a site and replay would carry on regardless. Another
+        agent's trail has to be deliberately borrowed first, which copies it into this
+        agent's own memory, which is exactly what makes it forgettable.
+        """
+        import pathlib
+
+        source = (pathlib.Path(__file__).resolve().parents[1] / "src/cairn/executor.py").read_text(
+            encoding="utf-8"
+        )
+        body = source.split('"""', 2)[-1]
+
+        for reaching_out in ("offers_for", "borrow_trail", "every_offer", "_shared"):
+            assert reaching_out not in body, (
+                f"executor.py touches the commons via {reaching_out} — the warm path must "
+                f"only ever follow a trail this agent holds itself"
+            )
+
+    def test_forgetting_a_site_leaves_replay_with_nothing_even_when_others_shared_it(
+        self, tmp_path, browser, demo_server
+    ):
+        from cairn.browser import domain_of
+        from cairn.executor import Executor, NoTrailError
+        from cairn.models import Playbook, Postcondition, Step
+        from cairn.store import CairnStore
+
+        shared_db = str(tmp_path / "memory.db")
+        site = domain_of(demo_server)
+        trail = Playbook(
+            domain=site,
+            task="open the portal",
+            steps=[
+                Step(
+                    index=1,
+                    intent="open the portal",
+                    action="goto",
+                    value=f"{demo_server}/",
+                    postcondition=Postcondition("url_contains", "/"),
+                )
+            ],
+        )
+
+        alice = CairnStore(db_path=shared_db, agent="alice")
+        alice.save_playbook(trail)
+        alice.share_trail(site)
+
+        bob = CairnStore(db_path=shared_db, agent="bob")
+        bob.borrow_trail(site)
+        assert Executor(bob, browser).run(site, task="open the portal").ok
+
+        bob.forget_site(site)
+
+        # Alice still offers it. That changes nothing for replay.
+        assert bob.offers_for(site)
+        with pytest.raises(NoTrailError):
+            Executor(bob, browser).run(site, task="open the portal")

@@ -19,6 +19,7 @@ Never print to stdout — stdio is the MCP transport and a stray print corrupts 
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any
 
@@ -27,7 +28,7 @@ from cairn.browser import DEFAULT_PROFILE, domain_of
 from cairn.executor import Executor, NeedsTask, NoTrailError
 from cairn.models import Locator, SiteKnowledge
 from cairn.operations import ActionFailed, Session
-from cairn.store import CairnStore
+from cairn.store import CairnStore, TrailAlreadyHere
 from cairn.worker import BrowserWorker
 from mcp.server.fastmcp import FastMCP
 
@@ -130,8 +131,9 @@ class CairnTools:
         headless: bool = True,
         downloads: str | None = None,
         profile: str | None = None,
+        agent: str | None = None,
     ):
-        self.store = CairnStore(db_path=db_path)
+        self.store = CairnStore(db_path=db_path, agent=agent)
         self.profile = profile if profile is not None else str(DEFAULT_PROFILE)
         self.downloads = downloads
         self.headless = headless
@@ -190,9 +192,16 @@ def build_server(
     headless: bool = True,
     downloads: str | None = None,
     profile: str | None = None,
+    agent: str | None = None,
 ) -> FastMCP:
     """Wire the tools. Kept in a function so tests can build a server without running it."""
-    tools = CairnTools(db_path=db_path, headless=headless, downloads=downloads, profile=profile)
+    tools = CairnTools(
+        db_path=db_path,
+        headless=headless,
+        downloads=downloads,
+        profile=profile,
+        agent=agent,
+    )
 
     server = FastMCP(
         "cairn",
@@ -272,6 +281,43 @@ def build_server(
             }
         except NoTrailError as unknown:
             facts = _facts_for(tools, key)
+            offers = [] if tools.store.was_forgotten(key) else tools.store.offers_for(key)
+
+            if offers:
+                # Somebody else has already walked this. Exploring now would throw their
+                # work away, so the instruction is REPLACED, not added to.
+                return {
+                    "ok": False,
+                    "known": False,
+                    "site": key,
+                    "message": str(unknown),
+                    "site_facts": facts,
+                    "shared_trails": offers,
+                    "next": (
+                        f"Do NOT explore. Another agent has already walked {key} and left "
+                        f"a trail: {offers[0]['task']!r}, shared by "
+                        f"{offers[0]['shared_by']!r}. Call cairn_borrow to take it, then "
+                        f"cairn_run again with `task` set to exactly that wording."
+                    ),
+                }
+
+            if tools.store.was_forgotten(key):
+                return {
+                    "ok": False,
+                    "known": False,
+                    "site": key,
+                    "message": str(unknown),
+                    "site_facts": facts,
+                    "was_forgotten": True,
+                    "next": (
+                        f"You told Cairn to forget {key}. Another agent may still have a "
+                        f"trail for it, and Cairn will not quietly follow one — that would "
+                        f"make forgetting meaningless. Either walk the site again, or say "
+                        f"plainly that you want somebody else's trail and call "
+                        f"cairn_borrow."
+                    ),
+                }
+
             return {
                 "ok": False,
                 "known": False,
@@ -414,6 +460,108 @@ def build_server(
             "ways_to_find_it": [locator.describe() for locator in step.locators] if step else [],
             "repairs_total": playbook.repairs,
             "next": "Fixed and saved. Call cairn_run again to finish the task.",
+        }
+
+    @server.tool()
+    def cairn_share(site: str, task: str | None = None) -> dict[str, Any]:
+        """Leave a trail where other agents can pick it up.
+
+        Call this once a task works, if the trail is worth somebody else having. They get
+        the route; they do not get you.
+
+        WHAT LEAVES YOUR MACHINE: the steps, every way of finding each control, the checks,
+        and the notes saved with cairn_note — the result below lists those notes in full,
+        so read it. WHAT NEVER LEAVES: anything typed into a field, and the account hint.
+        A shared login step asks whoever follows it for their own credentials.
+
+        Anyone who can read this memory can read what you share here.
+
+        Args:
+            site: The site, as a domain or full URL.
+            task: Which task, if this site has more than one trail.
+        """
+        key = domain_of(site) if "://" in site else site
+        try:
+            published = tools.store.share_trail(key, task)
+        except Exception as failure:  # noqa: BLE001
+            return err(failure)
+
+        if published is None:
+            return err(
+                f"you have no trail for {key} to share. Run the task once and call "
+                f"cairn_save first."
+            )
+        return {"ok": True, **published, "next": "Another agent can now call cairn_borrow."}
+
+    @server.tool()
+    def cairn_borrow(site: str, task: str | None = None, force: bool = False) -> dict[str, Any]:
+        """Take a trail another agent left for a site you have never walked.
+
+        Use this when cairn_run comes back with `shared_trails`. The trail is copied into
+        your own memory, so from then on it is yours: you can run it, repair it, and be
+        made to forget it.
+
+        It arrives with the evidence it earned elsewhere — the locators that are already
+        known to work are tried first — but not with the other agent's run counts.
+
+        A step that types something arrives asking YOU for the value, because it was never
+        given theirs.
+
+        Args:
+            site: The site, as a domain or full URL.
+            task: Which trail, if several were shared. Left out, you get the one that has
+                worked for the most agents.
+            force: Take it even though you have a trail here you already repaired.
+        """
+        key = domain_of(site) if "://" in site else site
+        try:
+            borrowed = tools.store.borrow_trail(key, task, force=force)
+        except TrailAlreadyHere as clash:
+            return err(f"{clash} Call again with force=true if that is what you mean.")
+        except Exception as failure:  # noqa: BLE001
+            return err(failure)
+
+        if borrowed is None:
+            return err(f"nobody has shared a trail for {key}.")
+
+        needed = [step.secret for step in borrowed.steps if step.secret]
+        return {
+            "ok": True,
+            "site": key,
+            # The EXACT wording to pass to cairn_run. A paraphrase may not match.
+            "task": borrowed.task,
+            "left_by": borrowed.borrowed_from,
+            "first_walked_by": borrowed.origin_agent,
+            "steps": len(borrowed.steps),
+            "clean_runs_behind_it": borrowed.inherited_runs,
+            "you_must_supply": needed,
+            "next": (
+                f"It is yours now. Call cairn_run with site={key!r} and task="
+                f"{borrowed.task!r} — exactly that wording."
+                + (
+                    f" It will ask you for: {', '.join(needed)}. Those were never shared."
+                    if needed
+                    else ""
+                )
+            ),
+        }
+
+    @server.tool()
+    def cairn_commons() -> dict[str, Any]:
+        """Every trail any agent has shared, and who left it.
+
+        Answers "what does this team already know how to do?" — including sites this agent
+        has never opened.
+        """
+        try:
+            offers = tools.store.every_offer()
+        except Exception as failure:  # noqa: BLE001
+            return err(failure)
+        return {
+            "ok": True,
+            "count": len(offers),
+            "shared_trails": offers,
+            "you_are": tools.store.who,
         }
 
     @server.tool()
@@ -735,9 +883,27 @@ def build_server(
 
 
 def run_stdio() -> None:
-    """Entry point for `cairn-mcp` and `python -m cairn_mcp`."""
-    server = build_server()
-    log("ready — cairn_run first, explore only if the site is unknown")
+    """Entry point for `cairn-mcp` and `python -m cairn_mcp`.
+
+    Configured entirely by environment, because that is the only channel an `.mcp.json`
+    entry has — this function takes no arguments and nothing calls it with any.
+
+        CAIRN_AGENT    who this agent is. Unset means the memory that already exists.
+        CAIRN_PROFILE  which browser profile to use. Two agents CANNOT share one: Chrome
+                       allows a single process per profile, and a shared profile would also
+                       mean the second agent is already signed in to everything the first
+                       one is — which is not what "an agent that has never seen this site"
+                       should mean.
+        CAIRN_DB       which memory database. Agents share this on purpose; it is how a
+                       trail gets from one to the other.
+    """
+    server = build_server(
+        agent=os.environ.get("CAIRN_AGENT") or None,
+        profile=os.environ.get("CAIRN_PROFILE") or None,
+        db_path=os.environ.get("CAIRN_DB") or None,
+    )
+    who = os.environ.get("CAIRN_AGENT") or "the default agent"
+    log(f"ready as {who} — cairn_run first, explore only if the site is unknown")
     try:
         server.run()
     finally:

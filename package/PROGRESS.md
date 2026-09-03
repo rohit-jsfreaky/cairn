@@ -270,6 +270,77 @@ good locator with the fragile one. Both are now kept, theirs ranked first.
 **Deletion gate proven on a real logged-in site:** memory gone, full re-exploration forced,
 and the login survived — it lives in the browser profile, not the trail.
 
+### Phase 5a is DONE (2026-09-03) — agent-to-agent memory
+
+One agent's trail, followed by another that has never opened the site. 557 tests pass
+(479 engine + 78 MCP).
+
+```
+alice                                  bob  (has never seen the site)
+────────────────────────────────       ──────────────────────────────────────
+learns it, 12 calls, slow
+cairn share acme.com
+                                       cairn run --site acme.com
+                                         -> unknown, but alice left a trail
+                                       cairn borrow acme.com
+                                       cairn run --site acme.com --task "..."
+                                         -> one call, the answer, no model
+```
+
+**Identity is a Sibyl tenant.** `CAIRN_AGENT` or `--agent`. Unset means Sibyl's own default
+tenant, which is where every trail learned before today already lives — so nothing had to
+be migrated, and agent A in the demo is simply the agent that already knows things.
+
+**Two clients, neither of which ever moves.** The first design switched one client's tenant
+around each shared operation. That is unsafe here: the MCP server calls the store from the
+browser thread AND from anyio worker threads, so a switch has a window in which another
+thread's `save_playbook` lands in the shared tenant — publishing a private trail, silently,
+with no error. There is now a client per tenant, built once, and a test that hammers it from
+six threads.
+
+**A trail carries the route, never the person.** Whatever was typed into a field leaves, and
+the step is marked as needing a value using the same mechanism passwords already use — so
+whoever follows it signs in as themselves. The account hint stays behind. Sharing reports
+every note it published and every value it withheld, so nothing goes out unseen.
+
+**The commons remembers what happened to it.** Borrows are counted, outcomes recorded, and
+offers ranked by "worked for three agents, failed for none". That is what makes it storage
+that changes because agents used it, rather than a file copy.
+
+**A fix travels back.** `contribute_repair` merges a borrower's repaired locators into the
+original offer and adds them to the contributors, without taking authorship. Agent A learned
+it, agent B fixed it, agent C runs the fixed version, and none of them ever spoke.
+
+### Three bugs this phase found before it could start
+
+1. **`search_similar` had never worked.** It asked the result for `.entities` then
+   `.results`; `search_entities` returns a `list` subclass with neither, so it returned `[]`
+   for every input from the day it was written. Nothing called it, so nothing noticed — and
+   both plan files named it as the centrepiece of this phase.
+2. **Every listing silently truncated at 100.** Fine for one agent's own trails; not for a
+   commons holding everybody's.
+3. **A `value_is` check carries the typed value.** Redacting the step and leaving the check
+   behind would have published the email twice over. Caught by a test, not by reading.
+
+### The gate, still honest
+
+- **The warm path never reads the commons.** Written into `executor.py`'s docstring and
+  enforced by a test that greps the file, because if replay could fall back to a shared
+  trail then `test_deletion_gate.py` would be proving nothing.
+- **Forgetting leaves a tombstone.** Without it, a judge forgets a site and the very next
+  message says "somebody else has it — borrow it", which reads as evasion. Cairn now refuses
+  to volunteer it and says why. Asking again on purpose still works; walking the site again
+  lifts it.
+- **Forgetting cannot reach another agent's copy**, because Sibyl offers no way to enumerate
+  tenants. That is a real isolation guarantee and it is now stated out loud rather than
+  discovered.
+
+### Said honestly
+
+Replay is zero model calls. **The handoff is not free**: run (miss) -> borrow -> run is
+three tool calls and two model turns, against roughly fifteen calls and a page read per turn
+for exploring. A judge who counts will catch an overclaim.
+
 ## Next action
 
 **Phase 2.5 - the browsing layer.** Read `BROWSING.md` first, then `PLAN.md` section 2.5.
@@ -580,6 +651,10 @@ is the biggest remaining gap between "demo" and "product".
 ## Session log
 
 - **2026-08-31** — folder created, plan written. No code.
+- **2026-09-03** — Phase 5a: agent-to-agent memory. Identity as a tenant, a commons,
+  share/borrow/contribute, the tombstone, and the CLI a judge can drive. Found that
+  `search_similar` had never worked, that listings truncated at 100, and that a `value_is`
+  check republishes the value it was redacting. 479 engine + 78 MCP pass.
 - **2026-09-02** — Phase 1g on GitHub, the first real site. Six bugs, two of them P0:
   a trail could not produce an answer, and a site could hold only one task. 368 engine +
   60 MCP pass. One existing test turned out to be asserting the bug.

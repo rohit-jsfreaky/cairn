@@ -142,7 +142,7 @@ Two decisions were locked by Rohit on 2026-09-01 and are not open again:
   content, cookie banner, confirm dialog, popup, file input, infinite scroll.
 - OK when: the Phase 2.5 finish line in MASTER-PLAN.md passes.
 
-## Phase 5a - agent-to-agent memory (Sep 8) - NOT blocked
+## Phase 5a - agent-to-agent memory - DONE 2026-09-03
 
 The coordination half of the 40% line. `search_similar` is already built and unused; Sibyl's
 `tenant_id` is already noted in RESEARCH.md and never used.

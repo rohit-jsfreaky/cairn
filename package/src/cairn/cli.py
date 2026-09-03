@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 from .browser import DEFAULT_PROFILE, Browser, domain_of
 from .events import Emitter, Event
 from .executor import Executor, NoTrailError
-from .store import CairnStore
+from .store import CairnStore, TrailAlreadyHere
 
 TICK = "+"
 CROSS = "!"
@@ -75,6 +75,18 @@ def render(event: Event) -> None:
         print(f"  {TICK} forgot {data['domain']}")
 
 
+def _store(args: argparse.Namespace) -> CairnStore:
+    """This agent's memory. Announced when it is not the usual one.
+
+    An exported CAIRN_AGENT that nobody remembers setting looks exactly like data loss —
+    `cairn sites` goes quiet and the trails appear to be gone. So say who is asking.
+    """
+    store = CairnStore(db_path=args.db, agent=getattr(args, "agent", None))
+    if store.agent:
+        print(f"  (as agent {store.agent})")
+    return store
+
+
 def _site_key(value: str) -> str:
     """Accept either a domain or a full URL, so nobody has to think about which."""
     return domain_of(value) if urlparse(value).scheme else value
@@ -89,21 +101,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     emitter = Emitter()
     emitter.subscribe(render)
-    store = CairnStore(db_path=args.db)
-
-    # One trail per site, so a task given here is a check rather than a chooser.
-    if args.task:
-        remembered = store.load_playbook(domain)
-        if remembered is not None and remembered.task.lower() != args.task.lower():
-            print()
-            print(f'  note: this site is remembered for "{remembered.task}"')
-            print(f'        you asked for "{args.task}" — running the remembered one')
-            print()
+    store = _store(args)
 
     browser = Browser(headless=not args.headed, profile=DEFAULT_PROFILE)
     try:
         browser.start()
-        result = Executor(store, browser, emitter=emitter).run(domain, start_url=start_url)
+        result = Executor(store, browser, emitter=emitter).run(
+            domain, task=args.task, start_url=start_url
+        )
     except NoTrailError as gone:
         print(f"\n  {CROSS} {gone}\n")
         return 2
@@ -169,7 +174,7 @@ def cmd_login(args: argparse.Namespace) -> int:
 
 
 def cmd_sites(args: argparse.Namespace) -> int:
-    store = CairnStore(db_path=args.db)
+    store = _store(args)
     sites = store.list_sites()
     if not sites:
         print("\n  Cairn remembers nothing yet.\n")
@@ -189,7 +194,7 @@ def cmd_sites(args: argparse.Namespace) -> int:
 
 
 def cmd_show(args: argparse.Namespace) -> int:
-    store = CairnStore(db_path=args.db)
+    store = _store(args)
     playbook = store.load_playbook(_site_key(args.domain))
     if playbook is None:
         print(f"\n  nothing remembered for {args.domain}\n")
@@ -214,7 +219,7 @@ def cmd_show(args: argparse.Namespace) -> int:
 def cmd_forget(args: argparse.Namespace) -> int:
     """The deletion gate, as one command."""
     domain = _site_key(args.site)
-    store = CairnStore(db_path=args.db)
+    store = _store(args)
 
     if not store.forget_site(domain):
         print(f"\n  nothing to forget for {domain}\n")
@@ -226,12 +231,80 @@ def cmd_forget(args: argparse.Namespace) -> int:
 
 
 def cmd_export(args: argparse.Namespace) -> int:
-    store = CairnStore(db_path=args.db)
+    store = _store(args)
     playbook = store.load_playbook(_site_key(args.domain))
     if playbook is None:
         print(f"nothing remembered for {args.domain}", file=sys.stderr)
         return 2
     print(json.dumps(playbook.to_dict(), indent=2))
+    return 0
+
+
+def cmd_share(args: argparse.Namespace) -> int:
+    """Leave a trail where another agent can pick it up."""
+    store = _store(args)
+    published = store.share_trail(_site_key(args.site), args.task)
+    if published is None:
+        print(f"\n  {CROSS} no trail here to share. Run the task once first.\n")
+        return 2
+
+    print(f'\n  {TICK} shared "{published["task"]}" on {published["domain"]}')
+    print(f"     {published['steps']} steps, as agent {published['shared_by']}")
+    if published["notes_published"]:
+        print("\n     these notes are now readable by every agent:")
+        for note in published["notes_published"]:
+            print(f"       - {note}")
+    if published["values_withheld"]:
+        print("\n     what was typed here did NOT leave your machine:")
+        for step in published["values_withheld"]:
+            print(f"       - {step}")
+    print()
+    return 0
+
+
+def cmd_borrow(args: argparse.Namespace) -> int:
+    """Take a trail somebody else left for a site this agent has never walked."""
+    store = _store(args)
+    domain = _site_key(args.site)
+    try:
+        borrowed = store.borrow_trail(domain, args.task, force=args.force)
+    except TrailAlreadyHere as clash:
+        print(f"\n  {CROSS} {clash}\n     use --force if that is what you mean.\n")
+        return 2
+
+    if borrowed is None:
+        print(f"\n  {CROSS} nobody has shared a trail for {domain}.\n")
+        return 2
+
+    print(f'\n  {TICK} borrowed "{borrowed.task}" from {borrowed.borrowed_from}')
+    print(f"     {len(borrowed.steps)} steps, {borrowed.inherited_runs} clean runs behind it")
+    needed = [step.secret for step in borrowed.steps if step.secret]
+    if needed:
+        print(f"     it will ask you for: {', '.join(needed)} — those were never shared")
+    print(f'\n     now run:  cairn run --site {domain} --task "{borrowed.task}"\n')
+    return 0
+
+
+def cmd_commons(args: argparse.Namespace) -> int:
+    """Everything any agent has shared, and who left it."""
+    store = _store(args)
+    offers = store.every_offer()
+    if not offers:
+        print("\n  nothing has been shared yet.\n")
+        return 0
+
+    print(f"\n  {len(offers)} shared trail(s):\n")
+    for offer in offers:
+        worked = f"worked for {offer['worked_for']}" if offer["worked_for"] else "untried"
+        print(f"  {offer['domain']}")
+        print(f'    "{offer["task"]}"')
+        print(
+            f"    left by {offer['shared_by']} · {offer['steps']} steps · "
+            f"borrowed {offer['borrows']}x · {worked}"
+        )
+        if offer["contributors"]:
+            print(f"    improved by {', '.join(offer['contributors'])}")
+        print()
     return 0
 
 
@@ -241,6 +314,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="A browser memory for AI agents. Learn a site once, replay it for free.",
     )
     parser.add_argument("--db", default=None, help="memory database (default: Sibyl's own)")
+    parser.add_argument(
+        "--agent",
+        default=None,
+        help="who is asking. Agents share one database and see only their own trails",
+    )
     subs = parser.add_subparsers(dest="command", required=True)
 
     run = subs.add_parser("run", help="replay a remembered trail (no model calls)")
@@ -271,6 +349,22 @@ def build_parser() -> argparse.ArgumentParser:
     forget = subs.add_parser("forget", help="wipe one site from memory (the deletion gate)")
     forget.add_argument("--site", required=True)
     forget.set_defaults(func=cmd_forget)
+
+    share = subs.add_parser("share", help="leave a trail for other agents to follow")
+    share.add_argument("site", help="domain or full url")
+    share.add_argument("--task", default=None, help="which trail, if the site has several")
+    share.set_defaults(func=cmd_share)
+
+    borrow = subs.add_parser("borrow", help="follow a trail another agent left")
+    borrow.add_argument("site", help="domain or full url")
+    borrow.add_argument("--task", default=None, help="which trail, if several were shared")
+    borrow.add_argument(
+        "--force", action="store_true", help="take it even over a trail you repaired"
+    )
+    borrow.set_defaults(func=cmd_borrow)
+
+    commons = subs.add_parser("commons", help="every trail any agent has shared")
+    commons.set_defaults(func=cmd_commons)
 
     export = subs.add_parser("export", help="print the raw playbook as JSON")
     export.add_argument("domain")

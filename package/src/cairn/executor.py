@@ -14,6 +14,13 @@ check the postcondition. Three outcomes:
 `model_calls` is hard-coded to 0 in the metrics for a replay, because there is no code
 path here that could make one. If that ever stops being true, this docstring is a lie and
 the deletion gate is worthless.
+
+THE WARM PATH NEVER READS THE COMMONS. Not once, not as a fallback, not to peek.
+Replay may only follow a trail this agent holds in its own memory, because that is
+exactly what `cairn forget` takes away — and if replay could reach into the shared
+memory instead, `test_deletion_gate.py` would be proving nothing at all. Another
+agent's trail has to be deliberately borrowed first, which copies it here, which is
+what makes it forgettable.
 """
 
 from __future__ import annotations

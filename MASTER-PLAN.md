@@ -114,7 +114,7 @@ The screen that makes memory visible next to the Claude Code terminal in the vid
 **FINISH LINE:** record 60 seconds of cold → warm on the dashboard, show it to someone with
 zero context. They must say "it remembered, that is why it got fast" with no help.
 
-## Phase 5a — Agent-to-agent memory · Sep 8 · `package/` + `mcp/` — NOT blocked
+## Phase 5a — Agent-to-agent memory — **DONE 2026-09-03** · `package/` + `mcp/`
 
 Split out of Phase 5 because it needs no blockchain and no Discord answer, and because the
 rules say **"coordination and dynamic-storage patterns top the band"** for the 40% that

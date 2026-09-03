@@ -19,7 +19,7 @@ import textwrap
 import pytest
 
 from cairn.models import Locator, Playbook, Postcondition, RunMetrics, SiteKnowledge, Step
-from cairn.store import CairnStore
+from cairn.store import CairnStore, trail_key
 
 DOMAIN = "billing.example.com"
 TASK = "download this month's invoice"
@@ -276,3 +276,52 @@ class TestHealth:
 
     def test_a_working_playbook_is_not_stale(self):
         assert make_playbook().is_stale is False
+
+
+class TestTheDebtPhase5aWouldHaveInherited:
+    """Two bugs found by reading, not by anything failing.
+
+    Both were invisible: `search_similar` was never called, and no test ever stored more
+    than a handful of trails. The next phase is built on both.
+    """
+
+    def test_searching_stored_trails_actually_returns_them(self, store: CairnStore):
+        """It returned an empty list for every input from the day it was written.
+
+        `search_entities` gives back a `list` subclass, so the results ARE the list. The
+        old code asked it for `.entities` and then `.results`, found neither, and fell
+        through to `[]` every single time.
+        """
+        store.save_playbook(make_playbook())
+
+        assert store.search_similar("invoice") == [trail_key(DOMAIN, TASK)]
+
+    def test_searching_for_something_nobody_walked_finds_nothing(self, store: CairnStore):
+        store.save_playbook(make_playbook())
+
+        assert store.search_similar("zzzznothinglikethis") == []
+
+    def test_a_listing_does_not_stop_at_a_hundred_sites(self, store: CairnStore):
+        """Sibyl's own default is 100 and it truncates in silence — no error, just a site
+        that is quietly not there. Harmless for one agent; not for a shared commons."""
+        for number in range(120):
+            store.save_playbook(Playbook(domain=f"site{number:03d}.com", task=TASK))
+
+        assert len(store.list_sites()) == 120
+
+    def test_only_the_memory_file_talks_to_sibyl(self):
+        """The promise the README makes to a judge: every memory read and write in this
+        project is in one file. Checked mechanically, so it cannot rot."""
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        importers = sorted(
+            path.relative_to(root).as_posix()
+            for folder in ("package/src", "mcp/src")
+            for path in (root / folder).rglob("*.py")
+            if "sibyl_memory_client" in path.read_text(encoding="utf-8")
+        )
+
+        assert importers == ["package/src/cairn/store.py"], (
+            f"memory calls have escaped store.py: {importers}"
+        )

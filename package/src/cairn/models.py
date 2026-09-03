@@ -10,7 +10,7 @@ Nothing in this module talks to memory. That is `store.py`, and only `store.py`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -27,6 +27,10 @@ LocatorKind = Literal[
     "css",
 ]
 
+# Actions that put text into a field. What was typed is the caller's own business, so it
+# never travels to another agent.
+_TYPED_INTO_A_FIELD = frozenset({"fill", "type"})
+
 # Below this many steps, the broken-share is meaningless and a trail is never retired
 # for being stale. It is repaired instead, which is recoverable.
 MIN_STEPS_TO_JUDGE_STALE = 3
@@ -34,6 +38,22 @@ MIN_STEPS_TO_JUDGE_STALE = 3
 # How much a single confirmed hit or miss moves a locator's health.
 _HIT_WEIGHT = 1.0
 _MISS_WEIGHT = 2.0  # a miss is worse news than a hit is good news
+
+
+def _field_name(intent: str) -> str:
+    """A name for the value a borrowed step will need, taken from what the step is for.
+
+    "type the account email" becomes "email". It only has to be recognisable to a person
+    setting an environment variable, so the last meaningful word is enough.
+    """
+    words = [
+        word
+        for word in "".join(
+            character if character.isalnum() else " " for character in intent.lower()
+        ).split()
+        if word not in {"the", "a", "an", "in", "into", "my", "your", "type", "fill"}
+    ]
+    return words[-1] if words else "value"
 
 
 def href_path(href: str) -> str:
@@ -244,6 +264,46 @@ class Step:
     def record_miss(self) -> None:
         self.misses += 1
 
+    def without_what_was_typed(self) -> Step:
+        """This step with the typed text removed, for handing to another agent.
+
+        `value` on a `fill` or `type` step is the literal thing that went into the box —
+        an email address, an account number. It never leaves. The step keeps its shape and
+        is marked as needing a value, so the borrower is asked for its own.
+        """
+        if self.action not in _TYPED_INTO_A_FIELD or self.value is None:
+            return self
+
+        return replace(
+            self,
+            value=None,
+            secret=self.secret or _field_name(self.intent),
+            postcondition=self._check_without_the_value(),
+            locators=list(self.locators),
+        )
+
+    def _check_without_the_value(self) -> Postcondition:
+        """The step's check, with the typed text taken out of it.
+
+        A `value_is` check literally holds what was typed — so redacting the step and
+        leaving the check behind would publish the thing twice over. It cannot survive
+        sharing anyway: the borrower is going to type something else.
+
+        What replaces it is "the field is still there", which is what a `fill` step is
+        checked with in the ordinary case. If there is nothing safe to point at, the only
+        remaining check is that the locator resolved at all — which the replay loop already
+        enforces before this is ever reached.
+        """
+        if not self.value or self.value not in self.postcondition.value:
+            return self.postcondition
+
+        where = self.postcondition.target or next(
+            (locator.value for locator in self.locators if locator.kind == "css"), ""
+        )
+        if where:
+            return Postcondition("element_present", where)
+        return Postcondition("url_contains", "")
+
     def ranked_locators(self) -> list[Locator]:
         """Most trustworthy first. Replay walks this order and stops at the first hit."""
         return sorted(self.locators, key=lambda loc: loc.confidence, reverse=True)
@@ -296,6 +356,18 @@ class Playbook:
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
 
+    origin_agent: str | None = None
+    """Who first walked this site. Survives every later borrow, so credit does not drift."""
+    borrowed_from: str | None = None
+    """Who this copy came from, if it was not learned here."""
+    contributors: list[str] = field(default_factory=list)
+    """Agents who repaired a step in it after the first one wrote it."""
+    inherited_runs: int = 0
+    """How many clean runs it had behind it when it was borrowed.
+
+    Kept separate from `runs`, which is reset on borrow. A borrowed trail arriving with
+    `runs=9` would make the borrower's own journal say something untrue."""
+
     @property
     def health(self) -> float:
         """Average step health. Used to decide when a playbook is past saving."""
@@ -319,6 +391,50 @@ class Playbook:
         broken = sum(1 for step in self.steps if step.health < 0.5)
         return broken > len(self.steps) / 2
 
+    def for_sharing(self, agent: str | None) -> Playbook:
+        """A copy of this trail with everything personal taken out of it.
+
+        The route survives. The identity does not: whatever was typed into a field leaves,
+        and the step is marked as needing a value instead — the same mechanism a password
+        already uses, so the borrower is asked for its own and told exactly where to put
+        it. A shared login trail signs in as whoever is following it.
+        """
+        return Playbook(
+            domain=self.domain,
+            task=self.task,
+            steps=[step.without_what_was_typed() for step in self.steps],
+            version=self.version,
+            runs=self.runs,
+            repairs=self.repairs,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+            origin_agent=self.origin_agent or agent,
+            contributors=list(self.contributors),
+        )
+
+    def as_borrowed_by(self, agent: str | None, *, shared_by: str | None) -> Playbook:
+        """This trail, rewritten as the borrower's own copy.
+
+        The locators keep the hits and misses they earned elsewhere — that evidence is the
+        whole point of borrowing, and it is what lets the borrower's first replay try the
+        route that is already known to work. The RUN counters do not: they belong to the
+        agent that did the running, and carrying them over would make the borrower's
+        journal claim runs it never made.
+        """
+        return Playbook(
+            domain=self.domain,
+            task=self.task,
+            steps=self.steps,
+            version=self.version,
+            runs=0,
+            repairs=0,
+            created_at=self.created_at,
+            origin_agent=self.origin_agent or shared_by,
+            borrowed_from=shared_by,
+            contributors=list(self.contributors),
+            inherited_runs=self.runs,
+        )
+
     def touch(self) -> None:
         self.updated_at = utc_now()
         self.version += 1
@@ -334,6 +450,10 @@ class Playbook:
             "updated_at": self.updated_at,
             "health": round(self.health, 3),
             "steps": [step.to_dict() for step in self.steps],
+            "origin_agent": self.origin_agent,
+            "borrowed_from": self.borrowed_from,
+            "contributors": self.contributors,
+            "inherited_runs": self.inherited_runs,
         }
 
     @classmethod
@@ -345,6 +465,10 @@ class Playbook:
             version=raw.get("version", 1),
             runs=raw.get("runs", 0),
             repairs=raw.get("repairs", 0),
+            origin_agent=raw.get("origin_agent"),
+            borrowed_from=raw.get("borrowed_from"),
+            contributors=list(raw.get("contributors", [])),
+            inherited_runs=raw.get("inherited_runs", 0),
             created_at=raw.get("created_at", utc_now()),
             updated_at=raw.get("updated_at", utc_now()),
         )
@@ -422,6 +546,24 @@ class SiteKnowledge:
         if self.account_hint:
             lines.append(f"the account used here is {self.account_hint}")
         return lines
+
+    def for_sharing(self) -> SiteKnowledge:
+        """What is safe to hand another agent.
+
+        The notes go, because they are usually the most expensive thing here — "the badge
+        is cached, trust the Open tab" is an hour of somebody's afternoon. The account
+        does not: it names a person's login.
+
+        Whoever shares this sees every note in the result, so nothing goes out unseen.
+        """
+        return SiteKnowledge(
+            domain=self.domain,
+            notes=list(self.notes),
+            needs_login=self.needs_login,
+            needs_2fa=self.needs_2fa,
+            account_hint=None,
+            overlays=list(self.overlays),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
