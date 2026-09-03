@@ -223,3 +223,27 @@ def test_the_new_tools_answer_with_a_message_not_a_stack_trace(bob_server):
         result = call(bob_server, tool, site="")
         assert result["ok"] is False
         assert "Traceback" not in str(result)
+
+
+def test_forget_says_what_it_withdrew(alice_knows, bob_server):
+    """Forgetting has to be legible: what it reached, and what it could not."""
+    alice_knows.share_trail(SITE)
+    call(bob_server, "cairn_borrow", site=SITE)
+    call(bob_server, "cairn_share", site=SITE)
+
+    result = call(bob_server, "cairn_forget", site=SITE)
+
+    assert result["withdrawn_from_commons"] == 1
+    assert "Withdrawn from the shared memory" in result["message"]
+
+
+def test_forget_says_what_it_cannot_reach(alice_knows, bob_server):
+    """Sibyl offers no way to enumerate tenants, so this is a real boundary — and a
+    guarantee rather than a shortcoming, but only if somebody says so."""
+    alice_knows.share_trail(SITE)
+    call(bob_server, "cairn_borrow", site=SITE)
+
+    result = call(bob_server, "cairn_forget", site=SITE)
+
+    assert result["other_agents_still_have_it"] == 1
+    assert "cannot reach into another agent's memory" in result["message"]

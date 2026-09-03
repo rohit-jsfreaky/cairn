@@ -7,9 +7,9 @@
 - Next.js app is live at `frontend/`. `npm run dev` works, typecheck and lint are clean.
 - **The landing page is built** (`/`). This was Rohit's call on day 1, ahead of the Phase 4
   dashboard. The dashboard is still not started and still depends on `backend/`.
-- The landing page uses NO backend and NO real data. Every number on it is a placeholder
-  written to look like a finished product page. Rohit will replace them with real numbers
-  once the engine runs. **This must happen before the repo goes public** — see Blockers.
+- The landing page uses NO backend, and as of 2026-09-03 **every number on it is measured**.
+  They come from `package/benchmark.py`, which runs a real browser against the demo site and
+  which anybody can run. The placeholders written on day 1 are gone.
 
 ## Done
 
@@ -103,14 +103,17 @@ Dashboard (Phase 4) — still blocked on `backend/`. Do not start it early.
 
 ## Blockers / must-fix before the repo is public
 
-- The landing page numbers (2m 41s → 4.1s, 31 tool calls, 39×) are placeholders. They must be
-  replaced with numbers from a real run, or removed. The hackathon rules disqualify
-  fabricated evidence.
-- The install command `claude mcp add cairn -- uvx cairn-mcp` is a placeholder until Phase 2
-  fixes the real package name.
-- `metadataBase` is not set in `app/layout.tsx` because there is no domain yet, so og:image
-  resolves against localhost in dev. Set it as soon as the site has a real URL, or the share
-  card will not load for anyone.
+- ~~The landing page numbers (2m 41s → 4.1s, 31 tool calls, 39×) are placeholders~~ —
+  **FIXED 2026-09-03.** Replaced with measured output from `package/benchmark.py`. The
+  default metric also changed from time to tool calls: the benchmark has no model thinking
+  time in it, so the clock (0.8s vs 0.4s) is true but uninteresting, while 9 tool calls
+  becoming 1 and 3 page reads becoming 0 is the honest measure of what memory removes.
+- ~~The install command `claude mcp add cairn -- uvx cairn-mcp` is a placeholder~~ — the
+  real command is now in the README (`claude mcp add cairn -- <path>/.venv/Scripts/cairn-mcp.exe`,
+  because nothing is published to PyPI yet). Check the page still matches the README.
+- ~~`metadataBase` is not set in `app/layout.tsx`~~ — **FIXED 2026-09-03.** It now reads
+  `NEXT_PUBLIC_SITE_URL` and falls back to localhost, so `next build` is warning-free and the
+  share card resolves as soon as that variable is set to the real domain.
 - Footer links (GitHub, Prior work, License) point at `#` until the repo exists.
 
 ## Session log

@@ -1,220 +1,255 @@
-# Cairn
+# Cairn — a browser memory for AI agents
 
 **Your AI can use websites. But it forgets how, every single time. Cairn makes it remember.**
 
+Cairn gives Claude Code, Cursor, Codex or any MCP client a browser that remembers. Your AI
+walks a website once — signing in, clicking, reading — and Cairn writes down the route. Every
+run after that follows the route instead: **one tool call, no page reading, no model calls at
+all.** When the site changes, Cairn repairs the one step that moved and keeps the rest.
+
 A cairn is a small pile of stones hikers leave on a trail, so the next traveller knows the
-way. Cairn walks a website once, leaves markers, and every later run follows the markers
-instead of re-exploring. When the site changes, it repairs only the broken step and saves the
-fix.
+way. Agents can leave them for each other too — see [Sharing](#sharing-a-trail).
 
-Built for the [Sibyl Labs Hackathon](https://hack.sibyllabs.org) (build window Sep 1–10, 2026).
-
-> **Status: in progress.** The landing page is built. The engine is being written now.
-> Nothing here claims to work yet — see [Build status](#build-status) for exactly what is and
-> is not done. Every number currently shown on the landing page is a placeholder for layout
-> and is marked as such below.
+[Install](#install) · [Quick start](#quick-start) · [How it works](#how-it-works) ·
+[Sharing](#sharing-a-trail) · [Forgetting](#forgetting) · [Prior work](#prior-work)
 
 ---
 
-## What it does
+## Install
 
-Cairn is a **tool, not an agent.** The AI you already use — Claude Code, Cursor, Codex — does
-the thinking. Cairn gives it a browser plus a memory.
+Python 3.11 or newer. Nothing is published to PyPI yet, so install from a clone:
+
+```bash
+git clone https://github.com/rohit-jsfreaky/cairn
+cd cairn
+
+python -m venv .venv
+.venv/Scripts/python -m pip install -e package -e mcp   # Windows
+# .venv/bin/python -m pip install -e package -e mcp     # macOS / Linux
+
+.venv/Scripts/python -m playwright install chromium
+```
+
+Then point your AI at it. For Claude Code, from the folder you want to work in:
+
+```bash
+claude mcp add cairn -- /absolute/path/to/cairn/.venv/Scripts/cairn-mcp.exe
+```
+
+Cursor and Codex take the same command in their own MCP config. Cairn is one stdio server
+with no arguments, so anything that speaks MCP will run it.
+
+**No API key.** Cairn never calls a model — yours does the thinking. Memory is a local SQLite
+file, and no account is needed for that either.
+
+## Quick start
+
+Ask your AI for something on a website, in your own words:
+
+> Go to github.com/microsoft/playwright and tell me how many open issues it has.
+
+The first time, it explores: opening the page, looking at the controls, reading the number.
+Then it saves what it did.
+
+Ask again tomorrow and it is one call:
+
+```json
+{ "ok": true, "steps_replayed": 2, "duration_ms": 1391,
+  "model_calls": 0, "pages_read": 0,
+  "answers": { "open issues": "117" } }
+```
+
+Prefer a terminal? Everything works without an MCP client:
+
+```bash
+cairn sites                              # what it remembers
+cairn run --site github.com --task "count open issues"
+cairn show github.com                    # the route, step by step
+cairn forget --site github.com           # make it forget
+```
+
+## How it works
+
+Two paths, and only the first one costs anything.
 
 | | what happens | cost |
 |---|---|---|
-| **Cold run** | Your AI explores the site through Cairn's tools. Cairn watches and writes a playbook to memory. | many tool calls, slow |
-| **Warm run** | One `cairn_run` call. Cairn replays the playbook itself — deterministic Python, **zero model calls**. | one tool call, fast |
-| **Repair** | A step's postcondition fails. Cairn hands that one step back to your AI, then saves the answer. | one step re-explored, not the whole trail |
-| **Forget** | `cairn forget --site <domain>` archives the trail. Replay has nothing left to follow. | — |
+| **First run** | Your AI drives the browser through Cairn. Cairn watches, and turns what happened into a route. | many calls, slow |
+| **Every run after** | Cairn replays the route itself, checking each step landed. | **one call, zero model calls** |
 
-The contrast is visible in your own editor transcript. That is the demo.
+Measured on the demo site in this repo — run `python package/benchmark.py` yourself:
 
-**No Anthropic API key. No account. No signup.** A warm run uses no model at all, so repeat
-runs cost nothing. If a model is ever needed for an optional standalone mode, it goes through
-OpenRouter only, and is never on the main path.
+```
+                time  tool calls  page reads  model calls
+Monday          0.8s           9           3            0   learning the site
+Tuesday         0.4s           1           0            0   from memory
+Wednesday       0.4s           1           0            0   from memory
+Thursday        6.4s           3           0            0   the site changed, one step repaired
+Friday          0.5s           1           0            0   from memory
+```
+
+The clock is the least interesting column. This benchmark has no model thinking in it, and
+thinking time is what memory actually removes. **Nine tool calls became one. Three page reads
+became none.**
+
+### What is actually stored
+
+Not a recording, and not notes. Each step keeps:
+
+- **what it was for**, in plain words — `"open this month's invoice"`
+- **up to nine ways to find the control**: test id, link target, label, role, placeholder,
+  alt text, title, visible text, CSS — ranked by which have actually worked
+- **a check that proves it landed** — the URL changed, the file downloaded, the field holds
+  what was typed, the row count is what it should be
+
+The checks are the difference between this and a macro recorder. A recorder clicks and hopes.
+Cairn notices when a click did nothing, and says the site changed.
+
+### When a site changes
+
+The nine locators are why most redesigns cost nothing: lose the CSS id, keep the accessible
+name, and the step still lands. When every route to one control is genuinely gone, Cairn stops
+at that step, hands your AI the current page, and asks only about **that one control**. The fix
+is saved. The rest of the route is untouched.
+
+If more than half the steps break, the site was rebuilt rather than adjusted. Cairn throws the
+route away and keeps what it knows about the site, which makes relearning cheaper than the
+first visit.
+
+## Sharing a trail
+
+Memory is per agent. Two agents can share one, and neither can see into the other's.
+
+```bash
+# alice, who already knows the site
+cairn --agent alice share github.com
+
+# bob, who has never opened it
+cairn --agent bob run --site github.com     # unknown — but alice left a trail
+cairn --agent bob borrow github.com
+cairn --agent bob run --site github.com --task "count open issues"   # one call
+```
+
+Bob was never taught anything. He inherited a working, self-checking route and ran it on a site
+he had never seen.
+
+**What travels:** the steps, every ranked locator with the evidence it earned, the checks, and
+the hard-won notes about the site — *"the tab badge is cached, trust the Open count"*.
+
+**What never travels:** anything typed into a field, and which account was used. A shared login
+step arrives asking *you* for your own credentials, resolved from your machine. Sharing tells
+you exactly which notes became visible and which values were held back.
+
+When a borrower repairs a broken step, the fix can be contributed back into the original, so a
+route improves across agents who never spoke to each other.
 
 ## Where the memory lives
 
-Every read and write to Sibyl Memory happens in **one file**:
+Every read and write goes through **one file**:
 
 ```
 package/src/cairn/store.py
 ```
 
-That is deliberate. A judge should be able to find every memory call in ten seconds, not
-hunt through the codebase. Nothing else in the project talks to Sibyl directly.
+Nothing else in the project imports the memory client, and a test enforces that by walking the
+source. Memory is [Sibyl Memory](https://hack.sibyllabs.org), used across three tiers:
 
-How the tiers are used:
-
-| Sibyl tier | what Cairn stores |
+| tier | what Cairn keeps there |
 |---|---|
-| **WARM** `set_entity("playbook", domain)` | the steps: intent, postcondition, ranked locators, health score |
-| **WARM** `set_entity("site_knowledge", domain)` | facts that survive a redesign (needs 2FA, rate limits, account email) |
-| **COLD** `write_event(...)` | every run, every drift detected, every repair, in time order |
+| **warm** `playbook` | the route: steps, locators, checks, health |
+| **warm** `site_knowledge` | what survives a redesign — needs a login, sends a code, where the number really is |
+| **cold** `write_event` | every run, drift, repair, share and borrow, in order |
 
-Entities are unique per `(tenant_id, category, name)`, enforced by Sibyl's schema, so a site
-can never hold two conflicting playbooks. Forgetting **archives**, it does not delete —
-matching Sibyl's own forgetting-vs-deleting doctrine.
+Entities are unique per `(tenant, category, name)` at the schema level, so a site can never
+hold two conflicting routes for the same task. Agent identity is a tenant, which is what makes
+one agent's memory genuinely invisible to another.
 
-## How memory made this possible
+## Forgetting
 
-Without a memory layer, this project is just Playwright with extra steps. Run 2 would cost
-exactly what run 1 cost — same page reads, same guessing, same tokens, forever.
+```bash
+cairn forget --site github.com
+```
 
-The memory is what turns exploring into replaying. It is not a notepad of prose about a
-website; it is an **executable, self-verifying, self-repairing procedure** that a second,
-completely fresh process can pick up and run with no model involved. Delete it and Cairn has
-nothing to replay — it degrades to a slow browser tool.
+Cairn now has nothing to follow for that site and has to learn it again. That is the point:
+**the memory is load-bearing, not a cache in front of something that works anyway.**
+
+Forgetting archives rather than deletes, and it is honest about its edges:
+
+- It **withdraws** anything you shared for that site.
+- It **cannot** reach a copy another agent already borrowed, and says so rather than leaving
+  you to find out.
+- It **remembers that you forgot**. If somebody else has a route for the site, Cairn will not
+  quietly hand it to you — you have to ask for it on purpose. Walking the site again clears
+  that.
+
+Replay never reads the shared memory. Only a deliberate `borrow` copies a route to you, which
+is what makes it yours to forget.
 
 ## Signing in
 
-Some logins cannot be automated, and should not be. A "Sign in with Google" button, a
-company SSO page, a code sent to your phone — attempting those with a script gets the
-account challenged or locked, and rightly so.
-
-So Cairn does what a person does: **you sign in once, by hand, in a real window.**
+Cairn keeps **one browser profile**, so you sign in to a site once — by hand, in a real window
+you can see:
 
 ```bash
-cairn login --site eu.posthog.com     # a window opens, you sign in, press Enter
-cairn run --site eu.posthog.com       # signed in from here on
+cairn login --site posthog.com
 ```
 
-From your AI it is `cairn_login`, then `cairn_login_done` once you say you are in.
+Chrome opens. Sign in however the site asks: a password, Google, a code on your phone. Cairn
+never types a password and never automates an SSO button. When you are done, it closes.
 
-Cairn keeps **one shared browser profile** at `~/.cairn/browser-profile`, so signing in to
-one site never signs you out of another, and you only do it once per site. It stores no
-password and no code — only the session, exactly as your own browser does.
+**Passwords are never stored in memory.** A step that needs one records only that a password
+goes here; the value is looked up at replay time from an environment variable or
+`~/.cairn/secrets.json`. Export a route and grep it — there is nothing to find.
 
-When a session expires, replay says so plainly ("the trail is fine, the session ran out")
-instead of trying to repair its way past a login page.
+Being signed in is not the same as remembering. Delete the memory and Cairn is still signed
+in, and still has no idea what to click.
 
-### Being signed in is not the same as remembering
+## What it can do
 
-This matters for the deletion test, so it is worth being exact:
+Cairn is Playwright underneath, exposed as two tools rather than thirty-five, because tool
+choice is the most fragile part of an agent's day.
 
-| | where it lives | what the gate does |
-|---|---|---|
-| **who you are** — cookies, session | your machine, `~/.cairn/browser-profile` | untouched |
-| **what Cairn knows** — the trail | Sibyl memory | **wiped** |
+**`cairn_act(intent, action, ref?, value?)`** — 35 actions: click, double_click, hover, fill,
+type, clear, press, check, uncheck, set_checked, select, upload, scroll_to, drag, focus, blur,
+tap, select_text, dispatch_event, goto, back, forward, reload, scroll, wait_for, new_tab,
+switch_tab, dismiss_when_seen, set_time, screenshot, evaluate, and more.
 
-Delete the memory and Cairn is still signed in, but it has no idea what to click and has
-to explore the site from scratch. The gate still holds.
+**`cairn_read(kind, ref?)`** — 14 kinds: the control list, text, all_text, value, checked,
+visible, enabled, editable, attribute, count, url, title, console errors, failed requests.
 
-Sites with an ordinary email-and-password form need none of this — Cairn signs in on every
-run by typing them, which is what the demo site does, so the demo shows a real login
-happening rather than assuming one.
+It handles the things that actually break recorded flows: shadow DOM, iframes, `div`s
+pretending to be buttons, content that loads late, cookie banners that appear whenever they
+feel like it, confirm dialogs, new tabs, and file pickers with no visible input. There is a
+page in the repo containing all nine at once, and a test that walks every one.
 
-## Passwords are never remembered
+`evaluate` is the escape hatch — run your own JavaScript when a site does something nobody
+anticipated. It is deliberately never recorded into a route, because a step made of code
+cannot be repaired.
 
-Cairn writes its trail to a file on disk. A password in that file is a password in a
-backup, a sync folder, and eventually a support ticket.
-
-So a step remembers **that** a password is typed, never which one:
-
-```json
-{ "intent": "type the password", "action": "fill", "value": null, "secret": "password" }
-```
-
-At replay time the value is read from the machine doing the run — an environment variable
-`CAIRN_SECRET_<SITE>_PASSWORD`, or `~/.cairn/secrets.json`. If it is not there, replay
-stops and says exactly what to set. It never guesses and never falls back to something
-stored earlier.
-
-`package/tests/test_secrets.py` searches the entire saved trail for the test password and
-fails if it appears anywhere.
-
-## The deletion test
-
-The hackathon rules say the memory must be load-bearing: delete it, and the project must stop
-doing what it claims. Ours is a one-line check.
+## Development
 
 ```bash
-cairn run "download this month's invoice" --site billing.example.com   # fast, from memory
-cairn forget --site billing.example.com                               # wipe it
-cairn run "download this month's invoice" --site billing.example.com   # nothing to follow
+cd package && ../.venv/Scripts/python -m pytest      # 479 tests
+cd mcp     && ../.venv/Scripts/python -m pytest      #  80 tests
+../.venv/Scripts/python -m ruff check src/ tests/
 ```
 
-Automated in `package/tests/test_deletion_gate.py`. It needs **no API key**, so anyone can run
-it in ten seconds.
-
-## Install
-
-Not on PyPI yet, so install from this repo:
-
-```bash
-git clone https://github.com/rohit-jsfreaky/cairn && cd cairn
-python -m venv .venv
-.venv/Scripts/python -m pip install -e package -e mcp
-.venv/Scripts/playwright install chromium
-
-claude mcp add cairn -- /absolute/path/to/cairn/.venv/Scripts/cairn-mcp.exe
 ```
-
-Cursor and Codex config, and a four-step demo you can run in ten minutes, are in
-[`mcp/README.md`](mcp/README.md).
-
-## Repo map
-
-| folder | what |
-|---|---|
-| `package/` | the engine — browser, memory, replay, verification, repair, CLI, tests |
-| `mcp/` | **the product** — Cairn as MCP tools for Claude Code / Cursor / Codex |
-| `backend/` | thin FastAPI server: run lifecycle, live event stream |
-| `frontend/` | Next.js — the landing page, and the dashboard that makes memory visible |
-
-Plans live in `MASTER-PLAN.md` and each folder's `PLAN.md`. Live state is in `PROGRESS.md`.
-
-## Build status
-
-| phase | what | state |
-|---|---|---|
-| 0 | Setup, prove Sibyl round-trips across a fresh process | **done** |
-| 1 | `package/` — the engine | **built**, 72 tests pass |
-| 2 | `mcp/` — the MCP server | **done**, finish line passed live |
-| 3 | `backend/` | next |
-| 4 | `frontend/` dashboard | not started |
-| 5 | Base x402 playbook transfer | blocked, cuttable |
-| — | `frontend/` landing page | **done** |
-
-**Honesty note.** The landing page shows example figures (`2m 41s → 4.1s`, `31 tool calls`,
-`39×`) and an install command that is not published yet. These are placeholders for layout
-only. They will be replaced with numbers from real runs, or removed, before this project is
-submitted. Nothing in this repo should be read as a measured result until this note says so.
-
-The first real measurement, on the local demo site, is: **9 tool calls → 1**, **6 page reads
-→ 0**, **0 model calls**, and 2.3× wall-clock. The wall-clock figure is deliberately
-unimpressive because the benchmark contains no model thinking time — which is the cost Cairn
-actually removes. A meaningful speed multiplier can only be measured with a real host AI
-driving the cold run, and that arrives with Phase 2.
-
-## Partner stacks
-
-- **Sibyl Memory** — the memory layer, core to the project, not optional. See
-  [Where the memory lives](#where-the-memory-lives).
-- **Base (x402)** — planned for Phase 5: one agent buys another agent's playbook and runs it
-  warm immediately. Cuttable, and currently blocked on whether Base Sepolia counts. **Not
-  built. Do not count it unless this line says it is done.**
+package/   the engine — browser, memory, replay, repair, sharing, CLI
+mcp/       the MCP server: 14 tools over the engine
+frontend/  the landing page
+```
 
 ## Prior work
 
-- **[pig-dot-dev/muscle-mem](https://github.com/pig-dot-dev/muscle-mem)** (766★) — "a cache
-  for AI agents to learn and replay complex behaviors", quiet since Jun 2025. The closest
-  existing idea and the reason this section exists. **How Cairn differs:** muscle-mem is a
-  cache. Cairn verifies every step against a postcondition, detects when the site itself has
-  changed, repairs only the broken step, persists that repair, and stores ranked locators
-  rather than a recording.
-- **Planning documents written before the build window opened.** `CLAUDE.md`,
-  `MASTER-PLAN.md`, `RESEARCH.md`, the folder plans and the empty scaffold were written on
-  2026-08-31, before Sep 1. They are declared here as prior work. No functional code existed
-  before the window opened.
-- **Design reference.** The landing page layout follows the structural pattern of
-  [aside.com](https://aside.com) — its spacing scale, type sizes and section rhythm were
-  measured and adapted. The words, the product and the artwork are ours.
-- **Third-party tooling, not committed.** The official [GSAP AI
-  skills](https://github.com/greensock/gsap-skills) (MIT) are cloned into `.claude/skills/`
-  and gitignored. GSAP itself is a dependency of the frontend.
+- **[pig-dot-dev/muscle-mem](https://github.com/pig-dot-dev/muscle-mem)** — "a cache for AI
+  agents to learn and replay complex behaviors". The closest existing idea. Cairn differs in
+  that it is not a cache: every step carries a check, so it can tell a changed site from a
+  working one, repair the single step that moved, and hand a working route to another agent.
+- **[@playwright/mcp](https://github.com/microsoft/playwright-mcp)** — the accessibility-tree
+  snapshot approach, which Cairn's page reading is built on.
+- The planning documents in this repository were written before the build began.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

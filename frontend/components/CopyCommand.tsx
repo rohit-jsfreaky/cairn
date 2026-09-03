@@ -2,7 +2,14 @@
 
 import { useState } from "react";
 
-const INSTALL = "claude mcp add cairn -- uvx cairn-mcp";
+/**
+ * The command a visitor can actually run today.
+ *
+ * It used to read `claude mcp add cairn -- uvx cairn-mcp`, which was shorter and did not
+ * work: nothing is published to PyPI, so there is no `cairn-mcp` for uvx to fetch. A copy
+ * button that hands somebody a failing command is worse than a longer honest one.
+ */
+const INSTALL = "git clone https://github.com/rohit-jsfreaky/cairn";
 
 export function CopyCommand() {
   const [copied, setCopied] = useState(false);

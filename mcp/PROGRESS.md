@@ -102,7 +102,8 @@ to use Cairn — the description rewrite (below) is what fixed that.
 **Lesson worth keeping:** a real host AI on a real task found a bug that 94 passing tests
 did not. Assert the user-visible outcome, not the internal event.
 
-**Still open:** a real captcha-free site (Phase 1g). Everything so far is the local demo.
+**Phase 1g is DONE (2026-09-02).** Proven through these tools on 8 real websites, two of
+them signed in. Nothing here is demo-site-only any more.
 
 ## Session log
 
@@ -112,3 +113,12 @@ did not. Assert the user-visible outcome, not the internal event.
   dedicated browser thread in the engine. `call_tool` turned out to return a
   `(blocks, structured)` tuple, which cost one debugging round. Install docs written and the
   project-scoped `.mcp.json` verified with `claude mcp list`.
+- **2026-09-02/03** — surface collapsed to `cairn_act` + `cairn_read`, both descriptions
+  GENERATED from the engine registries so a capability cannot exist without being
+  discoverable. Three commons tools added (`cairn_share`, `cairn_borrow`, `cairn_commons`)
+  and the `cairn_run` miss branch rewritten so `next` is REPLACED, not appended — left as it
+  was it said "explore this site" and "do NOT explore this site" in the same message.
+  `run_stdio()` now reads `CAIRN_AGENT`, `CAIRN_PROFILE` and `CAIRN_DB`, so a second agent
+  can be configured from `.mcp.json` at all — before this there was no way to.
+  `cairn_forget` now reports what it withdrew from the commons and what it cannot reach.
+  **80 tests, ruff clean.**

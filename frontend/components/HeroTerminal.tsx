@@ -45,7 +45,7 @@ export function HeroTerminal() {
             7 steps replayed from memory
           </span>
         </span>
-        <span className="font-mono text-[12.5px] text-muted">4.1s</span>
+        <span className="font-mono text-[12.5px] text-muted">0.4s</span>
         <span className="font-mono text-[12.5px] text-muted">1 tool call</span>
         <span className="font-mono text-[12.5px] text-muted">0 pages read</span>
       </div>

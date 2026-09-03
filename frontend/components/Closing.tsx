@@ -33,7 +33,7 @@ export function Closing() {
 
         <Container className="relative py-28 text-center sm:py-36">
           <p className="font-mono text-[12.5px] tracking-[0.08em] text-ink/55">
-            ONE LINE, IN THE EDITOR YOU ALREADY USE
+            IN THE EDITOR YOU ALREADY USE
           </p>
 
           <SplitHeading className="mx-auto mt-7 max-w-[860px] font-display text-[clamp(30px,3.8vw,50px)] font-medium leading-[1.1] text-ink">
@@ -47,6 +47,17 @@ export function Closing() {
           <div className="mt-11 flex justify-center">
             <CopyCommand />
           </div>
+
+          <p className="mx-auto mt-6 max-w-[540px] text-[15px] leading-[1.5] text-ink/50">
+            Then three lines in the{" "}
+            <a
+              href="https://github.com/rohit-jsfreaky/cairn#install"
+              className="underline decoration-ink/25 underline-offset-4 transition-colors hover:text-ink/75"
+            >
+              README
+            </a>
+            . Nothing is on PyPI yet, so Cairn installs from the clone.
+          </p>
         </Container>
       </section>
     </div>

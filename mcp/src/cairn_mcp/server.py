@@ -632,19 +632,37 @@ def build_server(
         """
         key = domain_of(site) if "://" in site else site
         try:
+            # Counted before it happens, because forgetting withdraws them.
+            withdrawn = len(tools.store.my_offers_for(key))
+            still_offered = len(tools.store.offers_for(key)) - withdrawn
             forgotten = tools.store.forget_site(key)
         except Exception as failure:  # noqa: BLE001
             return err(failure)
 
         if not forgotten:
             return {"ok": False, "site": key, "message": "nothing was remembered for this site"}
+
+        message = (
+            "Forgotten. The trail is archived, so cairn_run has nothing to follow and this "
+            "site would have to be learned again from scratch."
+        )
+        if withdrawn:
+            message += f" Withdrawn from the shared memory: {withdrawn} offer(s)."
+        if still_offered > 0:
+            # Said plainly rather than left to be discovered. Sibyl gives no way to
+            # enumerate tenants, so this really is a boundary Cairn cannot cross — which
+            # is a guarantee, not a shortcoming, but only if somebody says so.
+            message += (
+                f" {still_offered} other agent(s) still hold their own copy. Cairn cannot "
+                f"reach into another agent's memory, and will not offer you theirs back "
+                f"unless you ask for it on purpose."
+            )
         return {
             "ok": True,
             "site": key,
-            "message": (
-                "Forgotten. The trail is archived, so cairn_run has nothing to follow and "
-                "this site would have to be learned again from scratch."
-            ),
+            "withdrawn_from_commons": withdrawn,
+            "other_agents_still_have_it": still_offered,
+            "message": message,
         }
 
     @server.tool()

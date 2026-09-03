@@ -17,60 +17,72 @@ type Run = {
   values: Record<string, { display: string; fill: number }>;
 };
 
-/** The same task, on the same site, five mornings running. */
+/**
+ * The same task, on the same site, five mornings running.
+ *
+ * Measured, not illustrative. Every number below is printed by `package/benchmark.py`,
+ * which runs a real browser against the demo site in this repo — including Thursday, where
+ * `?variant=b` renames and moves the controls on purpose. Run it yourself:
+ *
+ *     .venv/Scripts/python package/benchmark.py
+ */
 const RUNS: Run[] = [
   {
     label: "Monday",
     note: "learning the site",
     learning: true,
     values: {
-      time: { display: "2m 41s", fill: 100 },
-      calls: { display: "31", fill: 100 },
-      reads: { display: "24", fill: 100 },
+      calls: { display: "9", fill: 100 },
+      reads: { display: "3", fill: 100 },
+      time: { display: "0.8s", fill: 100 },
     },
   },
   {
     label: "Tuesday",
     note: "from memory",
     values: {
-      time: { display: "4.1s", fill: 2.5 },
-      calls: { display: "1", fill: 3.2 },
+      calls: { display: "1", fill: 11.1 },
       reads: { display: "0", fill: 0 },
+      time: { display: "0.4s", fill: 50 },
     },
   },
   {
     label: "Wednesday",
     note: "from memory",
     values: {
-      time: { display: "3.9s", fill: 2.4 },
-      calls: { display: "1", fill: 3.2 },
+      calls: { display: "1", fill: 11.1 },
       reads: { display: "0", fill: 0 },
+      time: { display: "0.4s", fill: 50 },
     },
   },
   {
     label: "Thursday",
     note: "the site changed, one step repaired",
     values: {
-      time: { display: "11.2s", fill: 7 },
-      calls: { display: "4", fill: 12.9 },
-      reads: { display: "2", fill: 8.3 },
+      calls: { display: "3", fill: 33.3 },
+      reads: { display: "0", fill: 0 },
+      time: { display: "6.4s", fill: 100 },
     },
   },
   {
     label: "Friday",
     note: "from memory",
     values: {
-      time: { display: "4.0s", fill: 2.5 },
-      calls: { display: "1", fill: 3.2 },
+      calls: { display: "1", fill: 11.1 },
       reads: { display: "0", fill: 0 },
+      time: { display: "0.5s", fill: 62.5 },
     },
   },
 ];
 
+/**
+ * Calls first, on purpose. The clock is the least honest column here: this benchmark has
+ * no model thinking in it, and thinking is the cost memory actually removes.
+ */
 const METRICS = [
-  { id: "time", label: "Time to finish" },
   { id: "calls", label: "Tool calls" },
   { id: "reads", label: "Pages read" },
+  { id: "time", label: "Time to finish" },
 ];
 
 export function Speed() {
@@ -122,7 +134,9 @@ export function Speed() {
           <p className="mt-6 max-w-[62ch] text-[19px] leading-[1.5] text-muted">
             The same task, on the same site, five mornings in a row. Cairn walks it
             once on Monday and writes down the way. On Thursday the portal was
-            redesigned and it repaired the one step that moved.{" "}
+            redesigned and it repaired the one step that moved. These are measured
+            numbers — <code className="font-mono text-[15px]">package/benchmark.py</code>{" "}
+            prints them, and you can run it.{" "}
             <a
               href="#what"
               className="text-moss underline decoration-moss/30 underline-offset-4 transition-colors hover:decoration-moss"

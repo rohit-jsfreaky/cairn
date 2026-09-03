@@ -3,38 +3,32 @@
 > Read this first, every session. Update it before ending the session.
 > Per-folder detail lives in `package/PROGRESS.md`, `backend/PROGRESS.md`, `frontend/PROGRESS.md`.
 
-## Current state — 2026-09-01
+## Current state — 2026-09-03
 
-- **Current phase:** 3 (backend). Phases 0, 1 and 2 are built.
-- **Phase 0 finish line passed 2026-09-01:** Sibyl memory round-trips across a genuinely
-  separate process on Windows. No account needed — `MemoryClient.local()` works with zero
-  credentials, so the "no key, no account" claim is literally true. Details in RESEARCH.md.
-- **PHASE 2 (the MCP server) IS DONE — finish line passed live on 2026-09-01.** A clean
-  Claude Code session in a different folder did all four beats: recall in one call, repair
-  of one step, and forget. It reached for `cairn_run` on its own with no prompting.
-  24 tests, ruff clean. Evidence in `mcp/PROGRESS.md`.
-- **PHASE 1 (the engine) IS BUILT.** 72 tests pass, ruff clean. Browser, look/act/verify,
-  distill, warm executor with drift detection and repair, typed events, CLI, demo site,
-  and the automated deletion gate. `store.py` is still the only file that imports
-  `sibyl_memory_client`.
-- **One finish-line criterion needs your call.** MASTER-PLAN asks for ">=5x faster" on a
-  warm run. Measured on the local demo site it is **2.3x** wall-clock, because both runs do
-  the same six browser actions and our scripted cold run has **no model thinking time in
-  it** — which is the entire cost Cairn actually removes. The numbers that do not depend on
-  model speed are solid: **9 tool calls -> 1, 6 page reads -> 0, 0 model calls**. The real
-  multiplier can only be measured in Phase 2 with a live Claude Code driving the cold run.
-  Detail in `package/PROGRESS.md`. Flagged, not assumed.
-- **Registered on hack.sibyllabs.org:** NOT CONFIRMED — Rohit was told twice, closes TONIGHT
-  Aug 31 23:59 UTC. Ask him directly if unclear.
-- Project named **Cairn** (2026-08-31). Old working name "Muscle Memory" dropped — clashes
-  with pig-dot-dev/muscle-mem (766★). "Engram" also dropped — engram.com is a live AI
-  product ("AI That Learns From You").
-- Scaffold + all planning files created 2026-08-31 (this counts as declared prior work).
-- **Sep 1: the landing page is built** in `frontend/` (Next.js + Tailwind v4 + GSAP + Lenis).
-  This is out of phase order — Rohit asked for it first. The engine (Phase 1) is still not
-  started, and it is the part that must not slip.
-- Every number on the landing page is a placeholder. It must be replaced with numbers from a
-  real run before the repo is public. See `frontend/PROGRESS.md` Blockers.
+- **Current phase:** 6 (harden). Phases 0, 1, 1g, 2, 2.5 and 5a are DONE.
+- **The product is feature-complete.** Engine, MCP server, real sites, agent-to-agent
+  memory, README and landing page are all finished. What is left is hardening.
+- **479 engine tests + 80 MCP tests, all green. Ruff clean in both packages.**
+- **PHASE 1g IS DONE — proven on 8 real websites**, not the demo site. GitHub and PostHog
+  were walked by hand; Hacker News, PyPI, MDN, Wikipedia, Next.js and Hugging Face were
+  never tuned for and 6 of 6 replayed warm. Measured on GitHub warm: **1 tool call,
+  1391 ms, 0 model calls, the answer returned.**
+- **PHASE 2.5 IS DONE** — 35 actions, 14 reads, 9 locator kinds, 5 wait kinds, all behind
+  two tools (`cairn_act`, `cairn_read`) whose descriptions are GENERATED from the
+  registries, so a capability cannot exist without being discoverable. `evaluate` is the
+  escape hatch and is deliberately never recorded into a trail.
+- **PHASE 5a IS DONE** — agent-to-agent memory. Agent identity is a Sibyl tenant; the
+  commons is one fixed tenant; sharing strips every typed value and the account; borrowing
+  is explicit; a repair can be contributed back. The deletion gate stays honest via a
+  tombstone, so a forgotten site is never quietly offered back.
+- **The landing page numbers are now MEASURED, not placeholders.** `package/benchmark.py`
+  prints them and anybody can run it. The old figures (2m 41s, 4.1s, 31 calls, 39x) are
+  gone from the repo. The default metric is now tool calls, not the clock — the benchmark
+  contains no model thinking time, and thinking time is what memory actually removes.
+- **The README is a product README**, not a build log. Every claim in it was checked
+  against the code before it was written.
+- **Deletion gate proven on a real logged-in site**, not just in tests: memory gone,
+  re-exploration forced, the login survived.
 
 ## Done
 
@@ -46,31 +40,28 @@
 
 ## ▶ START HERE NEXT
 
-**Phases 0, 1 and 2 are done on day 1 of a 10-day window.** The product works end to end.
-What is left is what wins points, in this order:
+**Phase 6 — harden.** The only thing left before submission is proving it does not wobble:
+run the whole loop several times over, on more than one site, and fix whatever moves.
 
-1. **Phase 1g — a real site.** Everything so far is the local demo. One boring, captcha-free
-   real site proves this is not a toy. Criteria are already decided further down this file.
-2. **Phase 6 pieces that cannot be rushed** — the demo video (the unedited recall beat), and
-   replacing the landing page's placeholder numbers with measured ones.
-3. **Phase 3 backend + Phase 4 dashboard** — worth doing since we are ahead, but the cut
-   order says these go before the memory showcase if time gets tight.
+Cut list, in the order to cut if a day is lost:
 
-Still outstanding from Phase 1g: pick 1-2 real captcha-free sites and prove the loop there
-too. Everything so far is against the local demo site.
+- **Phase 3 (backend) and Phase 4 (dashboard) — recommended for cutting.** They are worth
+  points only if everything else is finished. The memory showcase is 40% of the score and
+  is already built; a dashboard adds polish, not points.
+- **Phase 5b (Base x402) is blocked** on Discord and is not worth waiting for.
+- **Phase 7 (full Playwright parity) is deferred by Rohit's own decision.** Nothing is
+  discarded — the remaining surface is written down, just not built yet.
 
-Run everything with the repo-root venv: `.venv/Scripts/python.exe`.
-Demo site: `python package/tests/demo_site/app.py` (port 8787, variants a / b / c).
+**Not to be raised until the product is finished:** the demo video and the two public
+posts. Rohit does those himself, last.
 
-## Next up - Phase 2.5, the browsing layer (Sep 2-3)
+## Decisions that stay locked (do not reopen)
 
-A live test on 2026-09-01 showed the browsing layer is about a quarter of what a real
-website needs. On a page with a React-style dropdown, a shadow DOM, an iframe and a
-late-loading link, our snapshot found **1 element**; Playwright's own snapshot found 7 and
-could act on all of them, including inside the iframe.
-
-Full audit of every Playwright capability, with a reason for each in/out decision:
-`package/BROWSING.md`. Steps: `package/PLAN.md` section 2.5.
+Phase 2.5 (the browsing layer) is BUILT — see Current state. It began because a live test on
+2026-09-01 found our snapshot returning **1 element** on a page where Playwright's own
+snapshot found 7, across a React dropdown, a shadow DOM, an iframe and a late-loading link.
+The snapshot now runs on Playwright's own engine. Full capability audit, with a reason for
+each in/out decision: `package/BROWSING.md`.
 
 **Two decisions locked 2026-09-01, not open again:**
 
@@ -85,11 +76,13 @@ Full audit of every Playwright capability, with a reason for each in/out decisio
 **Nothing is being cut.** I argued for trimming the browsing work to half a day and spending
 the rest on the coordination story, since "coordination and dynamic-storage patterns top the
 band" is where the 40% is won. Rohit's call: build all of it. He does this kind of automation
-himself, so the browsing layer is the reason the tool exists, not a demo prop.
+himself, so the browsing layer is the reason the tool exists, not a demo prop. Both got
+built: the browsing layer as Phase 2.5, the coordination story as **Phase 5a**, which was
+split out of Phase 5 because it needs no blockchain and no Discord answer.
 
-The coordination half is now **Phase 5a**, split out of Phase 5 because it needs no
-blockchain and no Discord answer - so both get built. Day-by-day schedule is in
-`MASTER-PLAN.md`.
+3. **The remaining Playwright surface is deferred, not discarded** (Rohit, 2026-09-02).
+   `evaluate` is the escape hatch that covers anything unbuilt, and what is left is written
+   down in `package/BROWSING.md` for a session that has spare time.
 
 ## Positioning answers (settled 2026-08-31 — use these in the README and the pitch)
 
@@ -106,11 +99,11 @@ blockchain and no Discord answer - so both get built. Day-by-day schedule is in
 - Discord answer pending: does Base Sepolia (testnet) count for the partner bonus?
 - Discord answer pending: is pre-window scaffolding OK if declared as prior work?
   (Declared in the README either way, so this is not blocking.)
-- Which 1-2 real sites for the demo: not chosen yet. **Criteria (decided 2026-08-31):** a
-  BORING task a real person actually repeats — check a dashboard every morning, download a
-  monthly invoice/report, refill the same form, pull numbers off an internal tool with no API.
-  Boring = repeated = exactly when memory pays. Must be captcha-free and stable. Do not pick
-  something clever.
+- ~~Which 1-2 real sites for the demo~~ — ANSWERED 2026-09-02. **GitHub** (count open
+  issues on a repo) and **PostHog** (read a number off the dashboard, signed in). Six more
+  were replayed warm with no tuning at all: Hacker News, PyPI, MDN, Wikipedia, Next.js,
+  Hugging Face. Both chosen sites fit the criteria decided 2026-08-31 — a BORING task a real
+  person repeats, captcha-free and stable.
 - Does Hermes load MCP servers directly, or does it need a plugin adapter? (OpenClaw is
   already confirmed to accept MCP servers.)
 - ~~Anthropic API key + budget~~ — NO LONGER NEEDED (product-shape decision, see log)
@@ -160,3 +153,19 @@ blockchain and no Discord answer - so both get built. Day-by-day schedule is in
   the way: the tool description lost to `curl` because it opened with a condition the AI
   could not evaluate, and downloads were never written to disk while a green test asserted
   only that the download event fired.
+- **2026-09-02/03 (Phase 1g, 2.5 and 5a all DONE)** — proved warm replay on 8 real sites
+  including two signed-in ones, then widened the browser surface to 35 actions and 14 reads
+  behind two generated tools, then built agent-to-agent memory on Sibyl tenants. Real bugs
+  the work exposed, all fixed: Playwright's aria snapshot printed passwords in plain text;
+  `search_similar` had NEVER worked (it read `.entities` off a list subclass and returned
+  `[]` every time); the executor silently did nothing for unknown actions and recorded that
+  as success; only click and press waited for the page, so a `select` that navigated was
+  never waited for; the Chrome fallback caught every error and quietly signed the user out;
+  CSS paths stopped at 5 levels and matched several elements. Three tests turned out to be
+  asserting bugs and were rewritten.
+- **2026-09-03 (the loose ends closed)** — `cairn_forget` now says what it withdrew from the
+  commons AND what it cannot reach, because Sibyl offers no way to enumerate tenants and
+  that boundary is a guarantee rather than a shortcoming — but only if somebody says so.
+  Landing page placeholders replaced with measured numbers from the new
+  `package/benchmark.py`. README rewritten as a normal open-source product README, on the
+  shape of openclaw's, with every factual claim verified against the code first.
