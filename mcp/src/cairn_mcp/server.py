@@ -685,7 +685,7 @@ def build_server(
             "first_walked_by": bought.origin_agent,
             "steps": len(bought.steps),
             "clean_runs_behind_it": bought.inherited_runs,
-            "paid": receipt.to_dict(),
+            "paid": {**receipt.to_dict(), "price": wanted.get("price")},
             "you_must_supply": needs,
             "next": (
                 f"The trail is yours now. Call cairn_run with site={key!r} and "

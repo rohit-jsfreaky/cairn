@@ -401,7 +401,8 @@ def cmd_buy(args: argparse.Namespace) -> int:
 
     print(f"  {TICK} bought {bought.task!r} from {bought.borrowed_from}")
     print(f"     {len(bought.steps)} steps, {bought.inherited_runs} clean runs behind it")
-    print(f"     paid {receipt.amount or 'a fee'} on {receipt.network}")
+    paid = receipt.amount or wanted.get("price") or "a fee"
+    print(f"     paid {paid} on {receipt.network}")
     print(f"     {receipt.explorer_url}")
     needed = [step.secret for step in bought.steps if step.secret]
     if needed:

@@ -199,6 +199,17 @@ Both are one file each, and a test walks the source to keep it that way. The onc
 is a real settled payment for a real resource: without it the shop answers 402 and the buyer
 gets nothing.
 
+**A real purchase, on chain:**
+[`0xd7de79f7…3e14`](https://sepolia.basescan.org/tx/0xd7de79f7f9bd41491d1419bd87e64ce10b674570204c3b0f379ced3a23173e14)
+— 0.01 USDC from the buying agent to the selling agent, Base Sepolia block 46345013. The
+buyer held no ETH; in x402 the facilitator submits the transaction and pays the gas, and the
+buyer only signs.
+
+That purchase is still subject to the deletion test. Run `cairn forget` on the buyer and the
+trail is gone, while the receipt stays in the journal with that transaction hash on it — a
+receipt proves a purchase happened, it is not a copy of what was bought. The chain never
+becomes a way around the memory.
+
 Base Sepolia rather than mainnet, and the README says so rather than implying otherwise. The
 free public x402 facilitator supports testnet only, and test USDC comes from the Circle
 faucet with no account. Moving to mainnet is configuration — `CAIRN_NETWORK`,

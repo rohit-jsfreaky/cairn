@@ -740,3 +740,23 @@ is the biggest remaining gap between "demo" and "product".
   a live shop answering a real `HTTP/1.1 402 Payment Required`, the challenge naming Base
   Sepolia and the real USDC contract `0x036CbD…F7e`, and a purchase attempt that reached the
   facilitator and failed only on funds.
+
+- **2026-09-03 (Phase 5b FINISH LINE PASSED — a real payment on Base Sepolia)** — the whole
+  chain works end to end against the real network. Alice shares a trail and opens a shop;
+  Bob, with his own database and no memory at all, browses the catalogue for free, is refused
+  with a genuine `402 Payment Required`, pays, and receives the route.
+  **Transaction: `0xd7de79f7f9bd41491d1419bd87e64ce10b674570204c3b0f379ced3a23173e14`**
+  (sepolia.basescan.org, block 46345013): **0.01 USDC from Bob's wallet to Alice's.** Two
+  distinct addresses on purpose — the first attempt used one wallet for both sides and the
+  transaction showed money going in a circle, which is a weak thing for a judge to click on.
+  Bob's wallet holds **zero ETH**: in x402 the facilitator submits the transaction and pays
+  the gas, and the buyer only signs an EIP-3009 authorisation.
+  Then the gate, live: `cairn forget` on Bob leaves `cairn sites` empty and the playbook
+  `None`, while the receipt with that transaction hash is still sitting in the cold journal.
+  A receipt proves a purchase happened; it is not a copy of what was bought.
+  One fix on the way: the CLI said "paid a fee" because the facilitator returns the settled
+  amount blank more often than not. `payments.browse` now carries the shop's asking price
+  down onto each listing, so both the CLI and `cairn_buy` can say **$0.01**.
+  Test wallets live in `~/.cairn/wallet.env` and `~/.cairn/alice-shop.env`, outside the repo.
+  They hold faucet money only and are worth nothing anywhere.
+  **518 engine + 98 MCP tests, ruff clean.**

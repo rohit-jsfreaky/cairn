@@ -245,8 +245,14 @@ def browse(base_url: str, domain: str) -> list[dict[str, Any]]:
         raise ShopUnreachable(f"nothing answered at {url}: {unreachable}") from unreachable
     if not answer.ok:
         raise ShopUnreachable(f"the shop at {base_url} answered {answer.status_code}.")
-    listed = answer.json().get("trails", [])
-    return listed if isinstance(listed, list) else []
+    body = answer.json()
+    listed = body.get("trails", [])
+    if not isinstance(listed, list):
+        return []
+    # The price sits on the response, not on each trail. Carrying it down onto each one lets
+    # a buyer say what it is about to pay, and afterwards what it paid — the facilitator's
+    # receipt comes back with the amount blank more often than not.
+    return [{**trail, "price": body.get("price")} for trail in listed]
 
 
 def _settlement(answer: requests.Response) -> Receipt:
