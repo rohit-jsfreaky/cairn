@@ -151,6 +151,20 @@ class CairnTools:
     def reset_session(self) -> None:
         self._session = None
 
+    def take_profile_note(self) -> str | None:
+        """Hand over the one-time note about a browser swap, and clear it.
+
+        The engine records the swap but cannot report it — printing from library code is
+        not allowed. Somebody has to say it out loud, or "sign-ins are kept, and if a site
+        asks you to sign in again this is why" is a promise nobody ever reads. Once, not
+        on every call: a person needs telling, not reminding.
+        """
+        browser = self.worker.browser
+        note = getattr(browser, "profile_note", None) if browser is not None else None
+        if note:
+            browser.profile_note = None
+        return note
+
     def open_login_window(self, url: str) -> None:
         """Show a real browser window so a person can sign in themselves.
 
@@ -804,7 +818,8 @@ def build_server(
             outcome = tools.worker.submit(
                 lambda _browser: session.act(intent, action, ref=ref, value=value, to=to)
             )
-            return {"ok": True, **outcome}
+            note = tools.take_profile_note()
+            return {"ok": True, **outcome, **({"note": note} if note else {})}
         except (ActionFailed, actions.UnknownAction, actions.ActionNeedsMore) as refused:
             return err(refused)
         except Exception as failure:  # noqa: BLE001
@@ -823,7 +838,8 @@ def build_server(
             if kind == PAGE:
                 page = tools.worker.submit(lambda _browser: session.look())
                 page["elements"] = page["elements"][:MAX_ELEMENTS]
-                return {"ok": True, "kind": PAGE, **page}
+                note = tools.take_profile_note()
+                return {"ok": True, "kind": PAGE, **page, **({"note": note} if note else {})}
 
             answer = tools.worker.submit(
                 lambda _browser: session.read(

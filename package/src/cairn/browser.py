@@ -218,7 +218,7 @@ _DESCRIBE_JS = """
 def _is_missing_browser(problem: BaseException) -> bool:
     """Is this "the browser is not installed", or something else entirely?
 
-    Everything else — a profile already open, a crash on startup — needs its own message.
+    Everything else — a profile already open, a crash on startup — needs its own handling.
     Treating them all as "Chrome is missing" is what silently signed a user out.
     """
     return NOT_INSTALLED in str(problem)
@@ -241,8 +241,30 @@ class NoSuchTab(RuntimeError):
     """Asked to continue in a tab that is not open."""
 
 
-class ProfileInUse(RuntimeError):
-    """Something else already has Cairn's browser profile open."""
+class ProfileUnavailable(RuntimeError):
+    """No browser would open Cairn's profile, and the reason is not knowable from here."""
+
+
+def _browser_name(channel: str | None) -> str:
+    """What to call a browser in a message meant for a person."""
+    return "Chrome" if channel == REAL_CHROME else "the bundled Chromium"
+
+
+def _why_refused(profile: Path, problem: BaseException) -> str:
+    """Say what happened, without inventing a cause we cannot know.
+
+    Playwright reports the same "target closed" words whether another browser already
+    holds the profile or the profile itself is unusable. Naming one of those was a guess,
+    and it sent people hunting for a browser window that was never open.
+    """
+    said = str(problem).split("Browser logs:")[0].strip().replace("\n", " ")
+    return (
+        f"Cairn could not open its browser profile at {profile}. Neither Chrome nor the "
+        "bundled Chromium would take it. Two things cause this, and the browser does not "
+        "say which: another Cairn run or a sign-in window still has the profile open, or "
+        "the profile is in a state no browser will accept. Deleting the folder fixes the "
+        f"second one, at the cost of signing you out everywhere. The browser said: {said}"
+    )
 
 
 class Browser:
@@ -302,6 +324,8 @@ class Browser:
         appears to succeed while nothing happened. Whatever is chosen, the message and the
         choice are both recorded, and replay stops if the message has changed."""
         self.last_dialog: dict[str, str] | None = None
+        self.profile_note: str | None = None
+        """Set when the profile had to be opened by the other browser. Worth passing on."""
         self.tabs: list[Page] = []
         self._watched: list[Page] = []
         self._overlays: list[str] = []
@@ -315,10 +339,11 @@ class Browser:
 
         if self._profile is not None:
             self._profile.mkdir(parents=True, exist_ok=True)
-            # Chrome allows one process per profile. A clear message beats a raw crash.
+            # Chrome allows one process per profile, and refuses some profiles outright.
+            # Either way the playwright handle must not be left running behind the error.
             try:
                 self._context = self._open_profile()
-            except ProfileInUse:
+            except ProfileUnavailable:
                 self._playwright.stop()
                 self._playwright = None
                 raise
@@ -376,13 +401,40 @@ class Browser:
             return self._playwright.chromium.launch(**self._launch_options())
 
     def _open_profile(self) -> Any:
-        """Open the saved profile with the browser that made it.
+        """Open the saved profile, preferring the browser that made it.
 
-        Never the other one. Chromium cannot read a session Chrome wrote, so switching
-        browsers turns a signed-in profile into a signed-out one without saying anything —
-        and signing in is the one thing Cairn asks a person to do themselves.
+        The other browser is a fallback, not a default: it is tried only after the owner
+        refuses outright. This used to refuse instead, on the belief that Chromium cannot
+        read a session Chrome wrote. Measured on a real profile, that is wrong — sign-ins
+        live in cookies both browsers read, and a profile Chrome will not open is worth
+        far more opened by Chromium than not opened at all.
+
+        The swap is never silent. It is written to `profile_note` for the caller to pass
+        on, because a person who is suddenly asked to sign in again deserves to know why.
         """
-        self._channel = self._owner_of_profile()
+        owner = self._owner_of_profile()
+        # A profile with no marker has never been opened, so it holds no sign-ins and the
+        # swap costs nothing. Saying "you may have to sign in again" there would be noise.
+        used_before = bool(self._profile and (self._profile / PROFILE_OWNER).is_file())
+        try:
+            return self._profile_opened_by(owner)
+        except PlaywrightError as refused:
+            spare = None if owner == REAL_CHROME else REAL_CHROME
+            try:
+                context = self._profile_opened_by(spare)
+            except PlaywrightError:
+                raise ProfileUnavailable(_why_refused(self._profile, refused)) from refused
+            if used_before:
+                self.profile_note = (
+                    f"{_browser_name(owner)} would not open Cairn's browser profile, so "
+                    f"{_browser_name(spare)} opened it instead. Sign-ins are kept. If a "
+                    "site does ask you to sign in again, this is why."
+                )
+            return context
+
+    def _profile_opened_by(self, channel: str | None) -> Any:
+        """Launch the saved profile with one named browser, and record which one won."""
+        self._channel = channel
         settings = {
             **self._launch_options(),
             "accept_downloads": True,
@@ -390,21 +442,9 @@ class Browser:
             "has_touch": self._touch,
             **self._context_options(),
         }
-        try:
-            context = self._playwright.chromium.launch_persistent_context(
-                str(self._profile), **settings
-            )
-        except PlaywrightError as refused:
-            if self._channel == REAL_CHROME and _is_missing_browser(refused):
-                # Only now is downgrading safe: this profile has never been opened.
-                self._channel = None
-                return self._open_profile()
-            raise ProfileInUse(
-                "Cairn could not open its browser profile. Usually that means it is "
-                "already open — close the sign-in window, or the other Cairn run, and try "
-                "again."
-            ) from refused
-
+        context = self._playwright.chromium.launch_persistent_context(
+            str(self._profile), **settings
+        )
         self._remember_owner()
         return context
 

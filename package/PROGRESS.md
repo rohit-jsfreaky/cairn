@@ -692,3 +692,20 @@ is the biggest remaining gap between "demo" and "product".
   structural locator was matching whole hrefs including query strings, and variant B was not
   actually breaking anything. Measured cold vs warm and found the >=5x wall-clock target is
   not reachable without a model in the loop — flagged above rather than tuned around.
+
+- **2026-09-03 (the browser would not start — fixed)** — Chrome refused Cairn's saved
+  profile outright: it launched, ran a healthy startup, and exited with no error in its own
+  log. Real Chrome opened a *fresh* profile fine and the bundled Chromium opened *this*
+  profile fine, so the fault was the pairing, not either half. Two things were wrong and
+  both are fixed. First, `_open_profile` turned EVERY Playwright error into "the profile is
+  already open" — the same catch-all mistake as the earlier silent sign-out, and it sent us
+  hunting for a browser window that did not exist. It now reports what actually happened,
+  names both possible causes, and quotes the browser. Second, the rule "never open the
+  profile with the other browser, because Chromium cannot read a session Chrome wrote"
+  turned out to be FALSE: measured on the real profile, Chromium opened it and PostHog was
+  still signed in on the real dashboard. So the other browser is now a fallback rather than
+  a refusal, and the swap is reported through `profile_note` instead of being silent.
+  A dead browser is worth less than a working one plus an honest sentence.
+  Two false leads worth remembering: a binary search over the 160 MB profile "found" a
+  culprit file that a 5x repeat proved innocent (0/5 both ways), and all 22 zero-byte
+  SQLite journals turned out to be normal, not leftovers.

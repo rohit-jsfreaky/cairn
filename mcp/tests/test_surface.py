@@ -267,3 +267,34 @@ def test_the_kinds_list_steers_away_from_the_whole_page(described) -> None:
     text = described["cairn_read"]
     assert "ALMOST NEVER THE RIGHT ANSWER" in text
     assert "THE ONE YOU USUALLY WANT" in text
+
+
+class TestABrowserSwapIsSaidOutLoud:
+    """Cairn may open its profile with the other browser when the owner refuses it.
+
+    That is the difference between a working browser and a dead one, but it can cost a
+    sign-in. The engine records the swap and cannot print; something has to say it.
+    """
+
+    @staticmethod
+    def _swapped(mcp_server, note="Chrome would not open Cairn's browser profile"):
+        tools = mcp_server.cairn_tools
+        tools.worker.browser = type("FakeBrowser", (), {"profile_note": note})()
+        return tools
+
+    def test_the_note_is_handed_over(self, mcp_server) -> None:
+        tools = self._swapped(mcp_server)
+
+        assert "Chrome would not open" in (tools.take_profile_note() or "")
+
+    def test_and_only_once(self, mcp_server) -> None:
+        """Telling somebody is useful. Repeating it on every call is noise."""
+        tools = self._swapped(mcp_server)
+        tools.take_profile_note()
+
+        assert tools.take_profile_note() is None
+
+    def test_a_normal_open_says_nothing(self, mcp_server) -> None:
+        tools = self._swapped(mcp_server, note=None)
+
+        assert tools.take_profile_note() is None

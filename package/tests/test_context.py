@@ -295,28 +295,88 @@ class TestAProfileBelongsToOneBrowser:
         assert _is_missing_browser(missing)
         assert not _is_missing_browser(busy)
 
-    def test_a_busy_profile_says_so_instead_of_downgrading(self, tmp_path) -> None:
-        """Refusing clearly beats opening a browser that is quietly signed out."""
-        from playwright.sync_api import Error as PlaywrightError
-
-        from cairn.browser import ProfileInUse
-
+    @staticmethod
+    def _stub(tmp_path, chromium):
+        """A Browser wired to a fake Playwright, so no real browser is launched."""
         profile = tmp_path / "profile"
+        # start() makes this before opening; the stub skips start(), so it makes it here.
+        profile.mkdir(parents=True, exist_ok=True)
         running = Browser(headless=True, profile=profile, downloads=tmp_path / "d")
-        running._playwright = None
-
-        class Busy:
-            def launch_persistent_context(self, *args, **kwargs):
-                raise PlaywrightError("Target page, context or browser has been closed")
-
-        running._playwright = type("PW", (), {"chromium": Busy()})()
+        running._playwright = type("PW", (), {"chromium": chromium})()
         running._profile = profile
         running._headless = True
         running._touch = False
         running._timeout_ms = 1000
         running._geolocation = None
         running._permissions = []
+        return running
 
-        with pytest.raises(ProfileInUse) as raised:
+    def test_a_profile_no_browser_will_open_does_not_guess_why(self, tmp_path) -> None:
+        """Playwright says the same words for a busy profile and a broken one. Claiming
+        one of them sent people looking for a window that was never open."""
+        from playwright.sync_api import Error as PlaywrightError
+
+        from cairn.browser import ProfileUnavailable
+
+        class Refuses:
+            def launch_persistent_context(self, *args, **kwargs):
+                raise PlaywrightError("Target page, context or browser has been closed")
+
+        running = self._stub(tmp_path, Refuses())
+
+        with pytest.raises(ProfileUnavailable) as raised:
             running._open_profile()
-        assert "already open" in str(raised.value)
+        said = str(raised.value)
+        assert "still has the profile open" in said
+        assert "no browser will accept" in said
+        assert "Target page, context or browser has been closed" in said
+
+    def test_the_other_browser_is_tried_before_giving_up(self, tmp_path) -> None:
+        """A profile Chrome refuses is worth more opened by Chromium than not at all.
+        Measured on a real profile: the sign-ins survive the swap."""
+        from playwright.sync_api import Error as PlaywrightError
+
+        tried: list[str | None] = []
+
+        class OnlyChromium:
+            def launch_persistent_context(self, *args, **kwargs):
+                tried.append(kwargs.get("channel"))
+                if kwargs.get("channel") == "chrome":
+                    raise PlaywrightError("Target page, context or browser has been closed")
+                return "opened"
+
+        running = self._stub(tmp_path, OnlyChromium())
+
+        assert running._open_profile() == "opened"
+        assert tried == ["chrome", None]
+
+    @staticmethod
+    def _only_chromium():
+        from playwright.sync_api import Error as PlaywrightError
+
+        class OnlyChromium:
+            def launch_persistent_context(self, *args, **kwargs):
+                if kwargs.get("channel") == "chrome":
+                    raise PlaywrightError("Target page, context or browser has been closed")
+                return "opened"
+
+        return OnlyChromium()
+
+    def test_and_the_swap_is_reported_rather_than_silent(self, tmp_path) -> None:
+        """Being signed out with no explanation is the failure this must never repeat."""
+        running = self._stub(tmp_path, self._only_chromium())
+        (running._profile / ".cairn-browser").write_text("chrome", encoding="utf-8")
+
+        running._open_profile()
+
+        assert running.profile_note is not None
+        assert "Chrome would not open" in running.profile_note
+        assert "sign in again" in running.profile_note
+
+    def test_but_a_never_opened_profile_says_nothing(self, tmp_path) -> None:
+        """No marker means no sign-ins yet, so the swap costs nothing and warning is noise."""
+        running = self._stub(tmp_path, self._only_chromium())
+
+        running._open_profile()
+
+        assert running.profile_note is None
