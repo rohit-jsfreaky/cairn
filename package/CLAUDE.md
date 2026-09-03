@@ -27,7 +27,9 @@ package/
     executor.py    # warm path: replay playbook, verify postconditions, repair broken steps
     model.py       # OPTIONAL standalone brain. OpenRouter ONLY. Never imported by the warm path.
     events.py      # typed events (StepStarted, MemoryWrite, MemoryRead, DriftDetected...)
-    cli.py         # cairn run / forget / sites / export
+    payments.py    # ALL x402 calls. The ONLY file that imports x402 / web3 / eth_account.
+    shop.py        # the HTTP shop: catalogue free, trail behind a 402. No x402 imports.
+    cli.py         # cairn run / forget / sites / export / share / borrow / sell / buy
   tests/
     test_store.py
     test_models.py
@@ -49,6 +51,11 @@ package/
    verify itself is a stale cache — the exact thing we are not building.
 5. Events out, never prints. Everything the agent does emits a typed event from `events.py`.
    The CLI renders them; the backend streams them. No `print()` in library code.
+6. **`payments.py` is the only file that touches x402.** Same reasoning as `store.py`: a
+   judge checking the onchain action finds all of it in one file. Nothing else imports
+   `x402`, `web3` or `eth_account` — `shop.py` included, which is why `payments.gate()`
+   exists. Enforced by a test that walks the source. And nothing on the warm path may
+   import `payments` or `shop`: replay stays offline, deterministic and free.
 
 ## Clean code rules
 

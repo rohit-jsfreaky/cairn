@@ -1,13 +1,22 @@
 """The terminal face of Cairn.
 
-Five commands, and one of them is the point of the whole project:
-
     cairn run    --site <url>        replay a remembered trail, no model involved
     cairn login  --site <url>        open a window and sign in yourself
     cairn sites                      what Cairn knows
     cairn show   <domain>            the trail, step by step
     cairn forget --site <domain>     THE DELETION GATE
     cairn export <domain>            the raw playbook as JSON
+
+    cairn share  <site>              leave a trail for another agent, free
+    cairn borrow <site>              take a trail another agent left, free
+    cairn commons                    every trail any agent has shared
+
+    cairn sell                       serve your trails for a fee, over HTTP
+    cairn buy    <shop> --site ...   pay another agent's shop and import the trail
+
+The first block is one machine. The second is two agents sharing one database. The third is
+two agents on different machines, who share nothing but a network — which is why that pair
+involves money.
 
 `forget` is the one a judge should try. Run `run` twice to see it be fast, then `forget`,
 then `run` again and watch it report that there is nothing left to follow.
@@ -27,11 +36,19 @@ from urllib.parse import urlparse
 from .browser import DEFAULT_PROFILE, Browser, domain_of
 from .events import Emitter, Event
 from .executor import Executor, NoTrailError
-from .store import CairnStore, TrailAlreadyHere
+from .store import CairnStore, TrailAlreadyHere, best_match, slug
 
 TICK = "+"
 CROSS = "!"
 DOT = "-"
+
+# Selling and buying pull in a web server and a blockchain library. Anyone who only
+# wants a browser with a memory should never be made to install either, so the market
+# is an optional extra and a missing one is a sentence instead of a traceback.
+MARKET_MISSING = (
+    "buying and selling trails needs a few extra packages. Install them with:\n"
+    '       pip install "cairn[market]"'
+)
 
 
 def render(event: Event) -> None:
@@ -308,6 +325,104 @@ def cmd_commons(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sell(args: argparse.Namespace) -> int:
+    """Serve this agent's shared trails, paid for with x402 on Base.
+
+    The stock is memory: whatever `cairn share` has published, and nothing else. Forget the
+    site and the shelf empties, which is the deletion gate reaching this feature too.
+    """
+    try:
+        from . import payments, shop
+    except ImportError:
+        print(f"\n  {CROSS} {MARKET_MISSING}\n")
+        return 2
+
+    store = _store(args)
+    try:
+        receives = payments.pay_to()
+    except payments.MissingWallet as unset:
+        print(f"\n  {CROSS} {unset}\n")
+        return 2
+
+    mine = [offer for offer in store.every_offer() if offer["shared_by"] == store.who]
+    print(f"\n  {TICK} shop open as agent {store.who}")
+    print(f"     http://{args.host}:{args.port}")
+    print(f"     {len(mine)} trail(s) for sale at {payments.price()} on {payments.network()}")
+    print(f"     paid to {receives}")
+    if not mine:
+        print(f"\n     {DOT} nothing shared yet. Run: cairn share <site>")
+    print("\n     stop with Ctrl+C\n")
+
+    try:
+        shop.serve(store, host=args.host, port=args.port)
+    except OSError as busy:
+        print(f"\n  {CROSS} {busy}\n")
+        return 2
+    except KeyboardInterrupt:
+        print("\n  shop closed.\n")
+    return 0
+
+
+def cmd_buy(args: argparse.Namespace) -> int:
+    """Buy a trail from another agent's shop and make it this agent's own."""
+    try:
+        from . import payments
+    except ImportError:
+        print(f"\n  {CROSS} {MARKET_MISSING}\n")
+        return 2
+
+    store = _store(args)
+    domain = _site_key(args.site)
+
+    try:
+        listed = payments.browse(args.url, domain)
+    except payments.ShopUnreachable as gone:
+        print(f"\n  {CROSS} {gone}\n")
+        return 2
+
+    wanted = _pick_listing(listed, args.task)
+    if wanted is None:
+        print(f"\n  {CROSS} that shop has no trail for {domain}.\n")
+        return 2
+
+    where = f"{args.url.rstrip('/')}/trails/{domain}/{slug(wanted['task'])}"
+    print(f"\n  paying for {wanted['task']!r} on {domain} ...")
+    try:
+        offer, receipt = payments.buy(where)
+    except (payments.MissingWallet, payments.PaymentRefused, payments.ShopUnreachable) as no:
+        print(f"\n  {CROSS} {no}\n")
+        return 2
+
+    try:
+        bought = store.take_bought_trail(offer, receipt=receipt.to_dict(), force=args.force)
+    except TrailAlreadyHere as clash:
+        print(f"\n  {CROSS} {clash}\n     use --force if that is what you mean.\n")
+        return 2
+
+    print(f"  {TICK} bought {bought.task!r} from {bought.borrowed_from}")
+    print(f"     {len(bought.steps)} steps, {bought.inherited_runs} clean runs behind it")
+    print(f"     paid {receipt.amount or 'a fee'} on {receipt.network}")
+    print(f"     {receipt.explorer_url}")
+    needed = [step.secret for step in bought.steps if step.secret]
+    if needed:
+        print(f"     it will ask you for: {', '.join(needed)} - those were never sold")
+    print(f'\n     now run:  cairn run --site {domain} --task "{bought.task}"\n')
+    return 0
+
+
+def _pick_listing(listed: list[dict], task: str | None) -> dict | None:
+    """Which of a shop's trails the caller meant. The only one, when they did not say."""
+    if not listed:
+        return None
+    if not task:
+        return listed[0]
+    exact = [offer for offer in listed if offer["task"] == task]
+    if exact:
+        return exact[0]
+    closest = best_match(task, [offer["task"] for offer in listed])
+    return next((offer for offer in listed if offer["task"] == closest), None)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cairn",
@@ -365,6 +480,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     commons = subs.add_parser("commons", help="every trail any agent has shared")
     commons.set_defaults(func=cmd_commons)
+
+    sell = subs.add_parser("sell", help="serve your shared trails for a small fee (x402/Base)")
+    sell.add_argument("--port", type=int, default=8402, help="default 8402")
+    sell.add_argument("--host", default="127.0.0.1", help="default 127.0.0.1, local only")
+    sell.set_defaults(func=cmd_sell)
+
+    buy = subs.add_parser("buy", help="buy a trail from another agent's shop")
+    buy.add_argument("url", help="the shop, e.g. http://127.0.0.1:8402")
+    buy.add_argument("--site", required=True, help="domain or full url")
+    buy.add_argument("--task", default=None, help="which trail, if the shop has several")
+    buy.add_argument("--force", action="store_true", help="take it even over a trail you repaired")
+    buy.set_defaults(func=cmd_buy)
 
     export = subs.add_parser("export", help="print the raw playbook as JSON")
     export.add_argument("domain")

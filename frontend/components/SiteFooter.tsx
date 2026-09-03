@@ -14,6 +14,7 @@ const COLUMNS = [
     links: [
       { href: "#what", label: "What it does" },
       { href: "#speed", label: "Why it is fast" },
+      { href: "#trails", label: "Sharing and selling" },
       { href: "#install", label: "Install" },
     ],
   },

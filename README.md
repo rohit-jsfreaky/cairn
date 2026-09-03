@@ -11,7 +11,8 @@ A cairn is a small pile of stones hikers leave on a trail, so the next traveller
 way. Agents can leave them for each other too — see [Sharing](#sharing-a-trail).
 
 [Install](#install) · [Quick start](#quick-start) · [How it works](#how-it-works) ·
-[Sharing](#sharing-a-trail) · [Forgetting](#forgetting) · [Prior work](#prior-work)
+[Sharing](#sharing-a-trail) · [Selling](#selling-a-trail) · [Forgetting](#forgetting) ·
+[Prior work](#prior-work)
 
 ---
 
@@ -41,6 +42,13 @@ with no arguments, so anything that speaks MCP will run it.
 
 **No API key.** Cairn never calls a model — yours does the thinking. Memory is a local SQLite
 file, and no account is needed for that either.
+
+Selling and buying trails needs a web server and a wallet library, which nobody who just
+wants a browser with a memory should have to install. They are an optional extra:
+
+```bash
+.venv/Scripts/python -m pip install -e "package[market]"
+```
 
 ## Quick start
 
@@ -143,6 +151,59 @@ you exactly which notes became visible and which values were held back.
 When a borrower repairs a broken step, the fix can be contributed back into the original, so a
 route improves across agents who never spoke to each other.
 
+## Selling a trail
+
+Sharing works when two agents sit on one machine and read one file. Two agents on different
+machines share nothing but a network — and nobody publishes for strangers unless it is worth
+their while. So a trail can be sold.
+
+```bash
+# alice, who already knows the site
+cairn share posthog.com
+cairn sell --port 8402                  # needs CAIRN_PAY_TO
+
+# bob, on another machine, with his own memory
+cairn buy http://alice:8402 --site posthog.com     # needs CAIRN_WALLET_KEY
+cairn run --site posthog.com --task "…"            # one call
+```
+
+Browsing the shop is free — you have to see what you are buying:
+
+```
+GET /trails/posthog.com          200  what is for sale, how many clean runs behind each
+GET /trails/posthog.com/weekly   402  Payment Required
+                                 200  the trail, once a payment settles
+```
+
+That is [x402](https://x402.org), an HTTP standard for machine-to-machine payments: the server
+answers **402** with what it wants, the client signs a USDC authorisation and retries, a
+facilitator settles it on chain. It costs **$0.01 on Base**, which is less than the model
+calls exploring the site would burn.
+
+**What travels is the route, not an account.** Everything typed into a field is stripped
+before it leaves, exactly as it is for free sharing — so a bought sign-in step arrives asking
+*you* for your own credentials.
+
+**The trail never goes on chain.** Only the payment does. A receipt proves a purchase
+happened; it is not a copy of what was bought. Forget the site and the route is gone, while
+the transaction stays public forever and still cannot bring it back.
+
+## Partner stacks
+
+| stack | what it does here | where |
+|---|---|---|
+| **[Sibyl Memory](https://hack.sibyllabs.org)** | every trail, every site fact, every run, share, purchase and repair | [`package/src/cairn/store.py`](package/src/cairn/store.py) — the only file that imports the memory client |
+| **[Base](https://base.org)** | the x402 payment that a trail is sold for, in USDC on Base Sepolia | [`package/src/cairn/payments.py`](package/src/cairn/payments.py) — the only file that imports x402 |
+
+Both are one file each, and a test walks the source to keep it that way. The onchain action
+is a real settled payment for a real resource: without it the shop answers 402 and the buyer
+gets nothing.
+
+Base Sepolia rather than mainnet, and the README says so rather than implying otherwise. The
+free public x402 facilitator supports testnet only, and test USDC comes from the Circle
+faucet with no account. Moving to mainnet is configuration — `CAIRN_NETWORK`,
+`CAIRN_FACILITATOR`, `CAIRN_PAY_TO` — not a code change.
+
 ## Where the memory lives
 
 Every read and write goes through **one file**:
@@ -158,7 +219,7 @@ source. Memory is [Sibyl Memory](https://hack.sibyllabs.org), used across three 
 |---|---|
 | **warm** `playbook` | the route: steps, locators, checks, health |
 | **warm** `site_knowledge` | what survives a redesign — needs a login, sends a code, where the number really is |
-| **cold** `write_event` | every run, drift, repair, share and borrow, in order |
+| **cold** `write_event` | every run, drift, repair, share, borrow and purchase, in order |
 
 Entities are unique per `(tenant, category, name)` at the schema level, so a site can never
 hold two conflicting routes for the same task. Agent identity is a tenant, which is what makes
@@ -229,8 +290,8 @@ cannot be repaired.
 ## Development
 
 ```bash
-cd package && ../.venv/Scripts/python -m pytest      # 479 tests
-cd mcp     && ../.venv/Scripts/python -m pytest      #  80 tests
+cd package && ../.venv/Scripts/python -m pytest      # 518 tests
+cd mcp     && ../.venv/Scripts/python -m pytest      #  98 tests
 ../.venv/Scripts/python -m ruff check src/ tests/
 ```
 

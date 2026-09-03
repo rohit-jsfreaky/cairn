@@ -28,6 +28,11 @@ from cairn.executor import Executor, NoTrailError
 from cairn.operations import Session
 from cairn.store import CairnStore
 
+# Used only by the paid-trail tests at the bottom, which need no browser and no server:
+# a trail that changes hands for money is still just a trail in somebody's memory.
+PAID_SITE = "billing.acme.com"
+PAID_TASK = "read the invoice total"
+
 
 @pytest.fixture
 def learned_site(browser: Browser, store: CairnStore, demo_server: str) -> str:
@@ -151,10 +156,24 @@ class TestTheGateSurvivesASharedMemory:
         )
         body = source.split('"""', 2)[-1]
 
-        for reaching_out in ("offers_for", "borrow_trail", "every_offer", "_shared"):
+        for reaching_out in (
+            "offers_for",
+            "borrow_trail",
+            "every_offer",
+            "take_bought_trail",
+            "_shared",
+        ):
             assert reaching_out not in body, (
                 f"executor.py touches the commons via {reaching_out} — the warm path must "
                 f"only ever follow a trail this agent holds itself"
+            )
+
+        # And it must never reach for the network or a wallet either. A replay that could
+        # buy a trail mid-run would be neither deterministic, nor free, nor forgettable.
+        for off_machine in ("payments", "shop", "requests"):
+            assert off_machine not in body, (
+                f"executor.py reaches off this machine via {off_machine} — replay must stay "
+                f"offline, deterministic and free"
             )
 
     def test_forgetting_a_site_leaves_replay_with_nothing_even_when_others_shared_it(
@@ -195,3 +214,96 @@ class TestTheGateSurvivesASharedMemory:
         assert bob.offers_for(site)
         with pytest.raises(NoTrailError):
             Executor(bob, browser).run(site, task="open the portal")
+
+
+class TestTheGateSurvivesATrailThatWasPaidFor:
+    """Money buys a copy of a trail. It must not buy an exemption from the gate.
+
+    This is the sharpest question a judge can ask about Phase 5b: once a payment is on a
+    public chain forever, is the memory still the thing doing the work? These tests are the
+    answer. Nothing here touches a chain — the receipt is a plain dict, which is all a
+    receipt ever is once it has been written down.
+    """
+
+    @staticmethod
+    def _offer(seller):
+        from cairn.store import offer_key
+
+        return seller._offer(offer_key(PAID_SITE, PAID_TASK, "alice"))
+
+    @staticmethod
+    def _receipt() -> dict:
+        return {
+            "transaction": "0xnotarealtransaction",
+            "network": "eip155:84532",
+            "amount": "$0.01",
+            "explorer_url": "https://sepolia.basescan.org/tx/0xnotarealtransaction",
+        }
+
+    def _sold_and_bought(self, tmp_path):
+        """Alice sells, Bob buys. Two databases, so nothing is shared but the offer dict."""
+        from cairn.models import Playbook, Postcondition, Step
+
+        alice = CairnStore(db_path=str(tmp_path / "alice.db"), agent="alice")
+        alice.save_playbook(
+            Playbook(
+                domain=PAID_SITE,
+                task=PAID_TASK,
+                runs=3,
+                steps=[
+                    Step(
+                        index=1,
+                        intent="open the portal",
+                        action="goto",
+                        value=f"https://{PAID_SITE}/",
+                        postcondition=Postcondition("url_contains", "/"),
+                    )
+                ],
+            )
+        )
+        alice.share_trail(PAID_SITE)
+
+        bob = CairnStore(db_path=str(tmp_path / "bob.db"), agent="bob")
+        bob.take_bought_trail(self._offer(alice), receipt=self._receipt())
+        return alice, bob
+
+    def test_a_bought_trail_can_still_be_forgotten(self, tmp_path):
+        _alice, bob = self._sold_and_bought(tmp_path)
+        assert bob.load_playbook(PAID_SITE, PAID_TASK) is not None
+
+        bob.forget_site(PAID_SITE)
+
+        assert bob.load_playbook(PAID_SITE, PAID_TASK) is None
+
+    def test_and_the_transaction_cannot_bring_it_back(self, tmp_path):
+        """THE POINT. The payment is permanent and public; the trail is neither. A receipt
+        is proof that something was bought, never a copy of it — so memory, not the chain,
+        is what the replay depends on."""
+        _alice, bob = self._sold_and_bought(tmp_path)
+        bob.forget_site(PAID_SITE)
+
+        # The receipt is still in the cold journal, transaction hash and all.
+        assert "0xnotarealtransaction" in str(bob.read_journal(limit=50))
+
+        # And it is worth nothing: there is no route, and nothing can derive one from it.
+        assert bob.load_playbook(PAID_SITE, PAID_TASK) is None
+        assert bob.was_forgotten(PAID_SITE) is True
+
+    def test_when_the_seller_forgets_there_is_nothing_left_to_sell(self, tmp_path):
+        """The shop's only stock is memory, so `forget` empties the shelf. A shop that kept
+        selling a trail its owner had forgotten would be a second source of truth."""
+        alice, _bob = self._sold_and_bought(tmp_path)
+        assert alice.my_offers_for(PAID_SITE)
+
+        alice.forget_site(PAID_SITE)
+
+        assert alice.my_offers_for(PAID_SITE) == []
+
+    def test_the_buyer_keeps_what_it_paid_for_when_the_seller_forgets(self, tmp_path):
+        """The other half of the same rule. A bought trail is the buyer's own copy — the
+        seller cannot reach into another agent's memory, and should not be able to."""
+        alice, bob = self._sold_and_bought(tmp_path)
+
+        alice.forget_site(PAID_SITE)
+
+        assert bob.load_playbook(PAID_SITE, PAID_TASK) is not None

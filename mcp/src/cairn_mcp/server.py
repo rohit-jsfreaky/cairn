@@ -28,7 +28,7 @@ from cairn.browser import DEFAULT_PROFILE, domain_of
 from cairn.executor import Executor, NeedsTask, NoTrailError
 from cairn.models import Locator, SiteKnowledge
 from cairn.operations import ActionFailed, Session
-from cairn.store import CairnStore, TrailAlreadyHere
+from cairn.store import CairnStore, TrailAlreadyHere, best_match, slug
 from cairn.worker import BrowserWorker
 from mcp.server.fastmcp import FastMCP
 
@@ -114,6 +114,30 @@ def _facts_for(tools: CairnTools, domain: str) -> list[str]:
     """What Cairn still knows about a site, in plain sentences."""
     knowledge = tools.store.load_site_knowledge(domain)
     return knowledge.summary() if knowledge else []
+
+
+# Shops this agent may buy trails from, comma separated. Read only here and in
+# cairn_buy: nothing on the warm path may reach off this machine.
+SHOPS_ENV = "CAIRN_SHOPS"
+
+
+def known_shops() -> list[str]:
+    """Addresses this agent has been told it may buy from."""
+    raw = os.environ.get(SHOPS_ENV, "")
+    return [where.strip().rstrip("/") for where in raw.split(",") if where.strip()]
+
+
+def _pick_from_shop(listed: list[dict[str, Any]], task: str | None) -> dict[str, Any] | None:
+    """Which of a shop's trails was meant. The only one, when nobody said."""
+    if not listed:
+        return None
+    if not task:
+        return listed[0]
+    exact = [offer for offer in listed if offer["task"] == task]
+    if exact:
+        return exact[0]
+    closest = best_match(task, [offer["task"] for offer in listed])
+    return next((offer for offer in listed if offer["task"] == closest), None)
 
 
 def err(problem: BaseException | str) -> dict[str, Any]:
@@ -342,6 +366,14 @@ def build_server(
                     "Cairn has not walked this site. Explore it once with "
                     "cairn_act and cairn_read, then call cairn_save so this "
                     "never has to happen again."
+                    + (
+                        f" Before exploring, note that this agent may buy trails from "
+                        f"{', '.join(known_shops())} — call cairn_buy to check whether one "
+                        f"already sells a trail for {key}. Buying costs a few cents and one "
+                        f"call; exploring costs many."
+                        if known_shops()
+                        else ""
+                    )
                     + (
                         " site_facts is what Cairn still knows about this site from before "
                         "— use it so you do not rediscover the same things."
@@ -576,6 +608,94 @@ def build_server(
             "count": len(offers),
             "shared_trails": offers,
             "you_are": tools.store.who,
+        }
+
+    @server.tool()
+    def cairn_buy(shop: str, site: str, task: str | None = None, force: bool = False):
+        """Buy a trail from another agent's shop, over the internet, for a few cents.
+
+        Use this when cairn_run says a site is NOT known and no other agent on this machine
+        has shared a trail for it. Someone on another machine may have walked it already,
+        and buying their trail costs one call and a few cents of USDC on Base. Exploring the
+        same site yourself costs many calls and a lot of page reading.
+
+        What happens: Cairn asks the shop what it has for the site, which is free. Then it
+        asks for the trail, gets HTTP 402 Payment Required, pays, and imports what comes
+        back. The trail becomes this agent's own — it can be run, repaired, and forgotten
+        like any other.
+
+        WHAT YOU BUY IS THE ROUTE, NOT AN ACCOUNT. Anything the seller typed into a field
+        was stripped before it left their machine, so a sign-in step arrives asking YOU for
+        your own credentials.
+
+        Needs a wallet: set CAIRN_WALLET_KEY to a private key holding test USDC on Base
+        Sepolia. Test USDC is free from the Circle faucet and needs no account.
+
+        Args:
+            shop: the shop's address, e.g. "http://127.0.0.1:8402".
+            site: the site you want a trail for, as a domain.
+            task: which trail, if the shop sells more than one for that site.
+            force: buy it even over a trail you have already repaired yourself.
+        """
+        try:
+            from cairn import payments
+        except ImportError:
+            return err(
+                'buying needs an extra: pip install "cairn[market]" in the environment '
+                "running this MCP server, then restart it."
+            )
+
+        key = domain_of(site) if "://" in site else site
+        try:
+            listed = payments.browse(shop, key)
+        except payments.ShopUnreachable as gone:
+            return err(gone)
+
+        wanted = _pick_from_shop(listed, task)
+        if wanted is None:
+            sells = [offer["task"] for offer in listed]
+            return err(
+                f"the shop at {shop} has no trail for {key}."
+                + (f" It does sell: {sells}." if sells else "")
+            )
+
+        where = f"{shop.rstrip('/')}/trails/{key}/{slug(wanted['task'])}"
+        try:
+            offer, receipt = payments.buy(where)
+        except (
+            payments.MissingWallet,
+            payments.PaymentRefused,
+            payments.ShopUnreachable,
+        ) as refused:
+            return err(refused)
+
+        try:
+            bought = tools.store.take_bought_trail(offer, receipt=receipt.to_dict(), force=force)
+        except TrailAlreadyHere as clash:
+            return err(f"{clash} Call again with force=true if that is what you mean.")
+        except Exception as failure:  # noqa: BLE001
+            return err(failure)
+
+        needs = sorted({step.secret for step in bought.steps if step.secret})
+        return {
+            "ok": True,
+            "site": key,
+            "task": bought.task,
+            "bought_from": bought.borrowed_from,
+            "first_walked_by": bought.origin_agent,
+            "steps": len(bought.steps),
+            "clean_runs_behind_it": bought.inherited_runs,
+            "paid": receipt.to_dict(),
+            "you_must_supply": needs,
+            "next": (
+                f"The trail is yours now. Call cairn_run with site={key!r} and "
+                f"task={bought.task!r} — exactly that wording."
+                + (
+                    f" It will ask you for: {needs}. Those were never sold; supply your own."
+                    if needs
+                    else ""
+                )
+            ),
         }
 
     @server.tool()

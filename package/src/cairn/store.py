@@ -79,6 +79,10 @@ MAX_SLUG = 60
 # than a hundred trails, with no error to notice.
 MAX_LISTED = 5000
 
+# How many payment receipts one offer keeps. A seller wants to know a trail earns its
+# keep, not to hold a full accounts ledger — and Sibyl caps an entity body at 1 MiB.
+MAX_RECEIPTS = 50
+
 # How much of a request's wording must be shared with a saved task before they are treated
 # as the same job. Low enough to survive rephrasing, high enough that "download the
 # invoice" never matches "cancel the subscription".
@@ -332,6 +336,8 @@ class CairnStore:
             "borrows": 0,
             "confirmed_by": [],
             "failed_for": [],
+            "sold": 0,
+            "receipts": [],
         }
 
         key = offer_key(domain, playbook.task, self.who)
@@ -339,8 +345,8 @@ class CairnStore:
         if existing:
             # Keep the ledger across a re-publish. The trail may have improved; the record
             # of who it has worked for is still true.
-            for carried in ("borrows", "confirmed_by", "failed_for"):
-                offer[carried] = existing[carried]
+            for carried in ("borrows", "confirmed_by", "failed_for", "sold", "receipts"):
+                offer[carried] = existing.get(carried, offer[carried])
 
         self._shared.set_entity(SHARED, key, offer)
         self._both_journals(
@@ -390,7 +396,7 @@ class CairnStore:
         three agents and failed for none is offered ahead of one nobody has tried.
         """
         return sorted(
-            (self._describe(offer) for offer in self._offers(domain)),
+            (self.describe_offer(offer) for offer in self._offers(domain)),
             key=lambda o: (o["worked_for"] - o["failed_for"], o["borrows"], o["runs"]),
             reverse=True,
         )
@@ -398,7 +404,7 @@ class CairnStore:
     def every_offer(self) -> list[dict[str, Any]]:
         """COMMONS read. Everything in the shared memory, and who left it."""
         return sorted(
-            (self._describe(offer) for offer in self._all_offers()),
+            (self.describe_offer(offer) for offer in self._all_offers()),
             key=lambda o: (o["domain"], o["task"]),
         )
 
@@ -421,23 +427,11 @@ class CairnStore:
         if chosen is None:
             return None
 
-        mine = self.load_playbook(domain, chosen["task"])
-        if mine is not None and mine.repairs and not force:
-            raise TrailAlreadyHere(
-                f"you already have a trail for {chosen['task']!r} that you repaired "
-                f"{mine.repairs} time(s). Borrowing would throw that away — say so on "
-                f"purpose if you mean it."
-            )
-
         offer = self._offer(offer_key(domain, chosen["task"], chosen["shared_by"]))
         if offer is None:
             return None
 
-        borrowed = Playbook.from_dict(offer["playbook"]).as_borrowed_by(
-            self.agent, shared_by=offer["shared_by"]
-        )
-        self.save_playbook(borrowed)
-        self._take_their_notes(offer)
+        borrowed = self._import_offer(offer, force=force)
 
         offer["borrows"] = offer.get("borrows", 0) + 1
         self._shared.set_entity(
@@ -512,7 +506,95 @@ class CairnStore:
             return True
         return False
 
+    # --------------------------------------------------------- trails that cost
+
+    def take_bought_trail(
+        self, offer: dict[str, Any], *, receipt: dict[str, Any], force: bool = False
+    ) -> Playbook:
+        """WARM write for the trail, then a COLD write for the proof it was paid for.
+
+        The offer arrived over HTTP from another machine, so there is no commons entry here
+        to update — the seller's ledger lives in the seller's own memory, which this agent
+        cannot reach and should not be able to.
+
+        The receipt is deliberately not enough to rebuild the route. Forget the site and the
+        trail is gone; the transaction stays on a public chain forever and still cannot bring
+        it back. That is what keeps memory load-bearing and the chain a receipt.
+        """
+        bought = self._import_offer(offer, force=force)
+        self._memory.write_event(
+            evaluated=[f"{self.who} had never walked {offer['domain']}"],
+            acted=[
+                f"{self.who} bought the trail for {bought.task} from "
+                f"{offer['shared_by']} for {receipt.get('amount') or 'a fee'}"
+            ],
+            extra={
+                "kind": "bought",
+                "domain": offer["domain"],
+                "task": bought.task,
+                "by": self.who,
+                "from": offer["shared_by"],
+                "inherited_runs": bought.inherited_runs,
+                "paid": receipt,
+            },
+        )
+        return bought
+
+    def record_sale(self, domain: str, task: str, *, receipt: dict[str, Any]) -> bool:
+        """COMMONS write. Note that one of this agent's own trails was bought.
+
+        Honest about what it counts: a trail handed over once the payment VERIFIED.
+        Settlement completes a moment later and it is the BUYER who ends up holding the
+        settled transaction hash. If settlement fails after the hand-over the buyer keeps
+        nothing and this count is one high, so it is called `sold`, not `earned`.
+
+        This is also what stops the commons being a pile of files — an offer accumulates
+        what actually happened to it, and what is stored changes because agents paid.
+        """
+        for offer in self._offers(domain):
+            if offer["shared_by"] != self.who or slug(offer["task"]) != slug(task):
+                continue
+            offer["sold"] = offer.get("sold", 0) + 1
+            offer["receipts"] = [*offer.get("receipts", []), receipt][-MAX_RECEIPTS:]
+            self._shared.set_entity(SHARED, offer_key(domain, offer["task"], self.who), offer)
+            self._both_journals(
+                acted=[f"{self.who} sold the trail for {offer['task']} on {domain}"],
+                extra={
+                    "kind": "sold",
+                    "domain": domain,
+                    "task": offer["task"],
+                    "by": self.who,
+                },
+            )
+            return True
+        return False
+
     # ------------------------------------------------------- commons helpers
+
+    def _import_offer(self, offer: dict[str, Any], *, force: bool) -> Playbook:
+        """WARM write. Turn somebody else's offer into a trail this agent owns.
+
+        Shared by borrowing and buying on purpose. Two import paths would drift, and the one
+        that drifted would be the paid one — the path nobody exercises by accident.
+
+        Copied, never followed in place: the taker ends up with something of its own that it
+        can run, repair, and be made to forget.
+        """
+        domain, task = offer["domain"], offer["task"]
+        mine = self.load_playbook(domain, task)
+        if mine is not None and mine.repairs and not force:
+            raise TrailAlreadyHere(
+                f"you already have a trail for {task!r} that you repaired {mine.repairs} "
+                "time(s). Taking this one would throw that away — say so on purpose if you "
+                "mean it."
+            )
+
+        taken = Playbook.from_dict(offer["playbook"]).as_borrowed_by(
+            self.agent, shared_by=offer["shared_by"]
+        )
+        self.save_playbook(taken)
+        self._take_their_notes(offer)
+        return taken
 
     @property
     def who(self) -> str:
@@ -539,8 +621,13 @@ class CairnStore:
         return body if isinstance(body, dict) else None
 
     @staticmethod
-    def _describe(offer: dict[str, Any]) -> dict[str, Any]:
-        """One offer, as a caller should see it."""
+    def describe_offer(offer: dict[str, Any]) -> dict[str, Any]:
+        """One offer, as a caller should see it: enough to judge it, not enough to run it.
+
+        Public because the shop's free catalogue is built from this. Reusing it is what
+        guarantees a browsing stranger never receives steps or locators — there are none in
+        the shape below to leak.
+        """
         trail = offer.get("playbook", {})
         return {
             "domain": offer["domain"],
@@ -729,7 +816,7 @@ def trail_key(domain: str, task: str | None) -> str:
     """
     if not task:
         return domain
-    return f"{domain}{KEY_SEPARATOR}{_slug(task)}"
+    return f"{domain}{KEY_SEPARATOR}{slug(task)}"
 
 
 def domain_of_key(key: str) -> str:
@@ -737,8 +824,13 @@ def domain_of_key(key: str) -> str:
     return key.split(KEY_SEPARATOR, 1)[0]
 
 
-def _slug(task: str) -> str:
-    """A task in plain words, reduced to something safe to use as a name."""
+def slug(task: str) -> str:
+    """A task in plain words, reduced to something safe to use as a name.
+
+    Public because `shop.py` builds and parses URL paths out of it, and a shop and a memory
+    key that disagreed about how a task is spelled would sell a trail nobody could find.
+    Idempotent: slugging an already-slugged name returns it unchanged.
+    """
     kept = [character if character.isalnum() else "-" for character in task.lower()]
     slug = "".join(kept)
     while "--" in slug:
@@ -808,4 +900,4 @@ def offer_key(domain: str, task: str, agent: str) -> str:
     overwrite each other in silence, and withdrawing would delete whichever happened to be
     there — including somebody else's.
     """
-    return f"{domain}{KEY_SEPARATOR}{_slug(task)}{KEY_SEPARATOR}{_slug(agent)}"
+    return f"{domain}{KEY_SEPARATOR}{slug(task)}{KEY_SEPARATOR}{slug(agent)}"

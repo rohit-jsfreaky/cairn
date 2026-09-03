@@ -154,7 +154,7 @@ The coordination half of the 40% line. `search_similar` is already built and unu
 - Journal both sides - who left the trail, who followed it.
 - OK when: agent B finishes a task on an unseen site in one call, zero model calls.
 
-## Phase 5b - Base x402 (Sep 8) - CUTTABLE, BLOCKED until Discord answers the testnet question
+## Phase 5b - Base x402 - BUILT 2026-09-03 (not blocked any more; see MASTER-PLAN.md)
 
 - Open the `x402` Python SDK docs (2.21.0) first, add findings to ../RESEARCH.md.
 - Flow: agent B hits an unknown site → `search_similar` shows agent A knows it → pays via x402

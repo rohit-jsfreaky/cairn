@@ -123,3 +123,12 @@ Dashboard (Phase 4) — still blocked on `backend/`. Do not start it early.
   Lenis + GSAP animation layer added. Rebuilt once after Rohit's feedback: the layout was
   measured off the reference site instead of eyeballed, gradient card art was replaced with
   real product UI on soft colour blobs, and the flat icon row was replaced with UI tiles.
+
+- **2026-09-03 (Base on the page)** — new `Trails.tsx` section, placed between `Control` and
+  `Closing` so the white/mist alternation still holds. It carries the part of the story the
+  page was missing entirely: a trail can be left for another agent for free, or sold to one
+  on another machine for a cent over x402. Terminal card walks the real flow — free
+  catalogue, 402, settled on Base Sepolia, then one call with zero model calls.
+  It says **Base Sepolia**, not "Base", on purpose: that is what actually runs, and the
+  rules disqualify fabricated evidence. Footer gained a "Sharing and selling" link to it.
+  `next build` clean.

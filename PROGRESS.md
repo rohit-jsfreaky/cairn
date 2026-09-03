@@ -5,10 +5,10 @@
 
 ## Current state — 2026-09-03
 
-- **Current phase:** 6 (harden). Phases 0, 1, 1g, 2, 2.5 and 5a are DONE.
+- **Current phase:** 6 (harden). Phases 0, 1, 1g, 2, 2.5, 5a and **5b (Base x402)** are DONE.
 - **The product is feature-complete.** Engine, MCP server, real sites, agent-to-agent
   memory, README and landing page are all finished. What is left is hardening.
-- **479 engine tests + 80 MCP tests, all green. Ruff clean in both packages.**
+- **518 engine tests + 98 MCP tests, all green. Ruff clean in both packages.**
 - **PHASE 1g IS DONE — proven on 8 real websites**, not the demo site. GitHub and PostHog
   were walked by hand; Hacker News, PyPI, MDN, Wikipedia, Next.js and Hugging Face were
   never tuned for and 6 of 6 replayed warm. Measured on GitHub warm: **1 tool call,
@@ -40,8 +40,15 @@
 
 ## ▶ START HERE NEXT
 
-**Phase 6 — harden.** The only thing left before submission is proving it does not wobble:
-run the whole loop several times over, on more than one site, and fix whatever moves.
+**Two things, in this order.**
+
+1. **Rohit: make a wallet and fund it.** Phase 5b is built and tested but its finish line —
+   one settled payment on the Base Sepolia explorer — needs a real wallet. Put the address in
+   `CAIRN_PAY_TO`, the private key in `CAIRN_WALLET_KEY`, and pull test USDC from the Circle
+   faucet. Do it EARLY: the faucet gives 20 per address per 2 hours. Until this exists the
+   ×1.15 multiplier is unclaimed, and that is the single largest number still on the table.
+2. **Phase 6 — harden.** Proving it does not wobble: run the whole loop several times over,
+   on more than one site, and fix whatever moves.
 
 Cut list, in the order to cut if a day is lost:
 
@@ -96,7 +103,11 @@ split out of Phase 5 because it needs no blockchain and no Discord answer.
 
 ## Open questions / blockers
 
-- Discord answer pending: does Base Sepolia (testnet) count for the partner bonus?
+- ~~Discord answer pending: does Base Sepolia count for the partner bonus?~~ — CLOSED BY
+  DECISION 2026-09-03. Never answered, and we stopped waiting. The rules ask only for "an
+  executed onchain action"; the free public facilitator lists no mainnet at all; prizes are
+  paid in USDC and the organisers "help winners set up a wallet"; a rival entry is openly on
+  Base Sepolia. Mainnet is three environment variables if it ever matters.
 - Discord answer pending: is pre-window scaffolding OK if declared as prior work?
   (Declared in the README either way, so this is not blocking.)
 - ~~Which 1-2 real sites for the demo~~ — ANSWERED 2026-09-02. **GitHub** (count open
@@ -186,3 +197,34 @@ split out of Phase 5 because it needs no blockchain and no Discord answer.
   Two false leads worth remembering: a binary search over the 160 MB profile "found" a
   culprit file that a 5x repeat proved innocent (0/5 both ways), and all 22 zero-byte
   SQLite journals turned out to be normal, not leftovers.
+
+- **2026-09-03 (Phase 5b — Base x402 — BUILT)** — a trail you can sell. The original plan
+  assumed payment could be bolted onto the local commons; it could not, because x402 is
+  defined by an HTTP 402 exchange and the commons is two Sibyl tenants in one local file with
+  no network anywhere. So the phase grew an HTTP boundary: `cairn sell` serves this agent's
+  shared trails, `cairn buy` (and the `cairn_buy` MCP tool) pays for one. That also closes a
+  real gap — two agents could previously only share memory by sharing a database file.
+  Design rules held to: browsing the catalogue is FREE and carries no steps or locators (it
+  reuses `describe_offer`, a shape with none in it to leak); the trail is genuinely
+  unreachable without a settled payment; **the trail never goes on chain**, only the payment
+  does; and the local commons stays free, because charging your own second agent on your own
+  laptop is theatre. All x402 lives in ONE file, `payments.py`, mirroring the `store.py` rule
+  — `shop.py` goes through `payments.gate()` rather than importing the SDK, and a test walks
+  the source to keep it that way.
+  Borrowing and buying now share `_import_offer`, so a bought trail gets the same provenance,
+  the same protection over a repaired trail and the same note merging. Two import paths would
+  have drifted, and the paid one is the one nobody exercises by accident.
+  **518 engine + 98 MCP tests, ruff clean.** Four new deletion-gate tests are the ones that
+  matter: a bought trail can still be forgotten, the transaction cannot bring it back, the
+  seller's shelf empties when the seller forgets, and the buyer keeps what it paid for when
+  the seller forgets.
+  Facts were read off the INSTALLED SDK, not its docs, which were wrong twice: `ResourceConfig`
+  takes `payTo` (camelCase) while `PaymentOption` takes `pay_to`, and the ASGI middleware needs
+  the async resource server. Also found: the middleware skips settlement on any 4xx, so a
+  buyer who pays for a trail the shop does not have gets a 404 and an untouched wallet.
+  No new `events.py` types: share and borrow do not emit any either, the cold journal is the
+  record, and three event classes nothing subscribes to would be dead code.
+  **Still needed from Rohit: a funded wallet.** Everything up to the signature is verified —
+  a live shop answering a real `HTTP/1.1 402 Payment Required`, the challenge naming Base
+  Sepolia and the real USDC contract `0x036CbD…F7e`, and a purchase attempt that reached the
+  facilitator and failed only on funds.

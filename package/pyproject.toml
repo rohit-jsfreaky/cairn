@@ -16,6 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "fastapi>=0.141.1", "uvicorn>=0.52.4"]
+# Selling and buying trails. Kept out of the runtime deps on purpose: someone who only
+# wants a browser with a memory should not have to install a web server and a blockchain
+# library. Extra names read off pypi.org/pypi/x402/json on 2026-09-03, not guessed.
+market = ["x402[evm,fastapi,requests]>=2.21.0", "fastapi>=0.141.1", "uvicorn>=0.52.4"]
 
 [project.scripts]
 cairn = "cairn.cli:main"

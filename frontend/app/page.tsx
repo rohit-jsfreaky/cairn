@@ -8,6 +8,7 @@ import { Intro } from "@/components/Intro";
 import { Repair } from "@/components/Repair";
 import { SiteFooter } from "@/components/SiteFooter";
 import { Speed } from "@/components/Speed";
+import { Trails } from "@/components/Trails";
 
 export default function Home() {
   return (
@@ -20,6 +21,7 @@ export default function Home() {
       <FreshSession />
       <Repair />
       <Control />
+      <Trails />
       <Closing />
       <SiteFooter />
     </main>

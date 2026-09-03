@@ -63,6 +63,80 @@ memory.search_entities("atlas")                               # FTS5 across ever
   address per 2 h, Base Sepolia supported. No card, no KYC, ₹0.
 - Testnet = Base Sepolia, production = Base mainnet. Same code, config change.
 
+## x402 Python SDK — the real API (2026-09-03, read off the INSTALLED package 2.21.0)
+
+Docs and examples disagreed with the package in two places that would have cost a debugging
+round, so this block is introspected, not copied. Everything below came from
+`inspect.signature` on the installed `x402` 2.21.0 (released 2026-08-27, requires-python
+>=3.10). Homepage moved to **github.com/x402-foundation/x402** — no longer `coinbase/x402`.
+
+- **Header constants exist — use them, never string literals:**
+  `PAYMENT_REQUIRED_HEADER == "PAYMENT-REQUIRED"`, `PAYMENT_SIGNATURE_HEADER ==
+  "PAYMENT-SIGNATURE"`, `PAYMENT_RESPONSE_HEADER == "PAYMENT-RESPONSE"`,
+  `HTTP_STATUS_PAYMENT_REQUIRED == 402`. All from `x402.http`. The older `X-PAYMENT` names are
+  still exported as `X_PAYMENT_HEADER` for v1 and are NOT what v2 sends.
+- **`DEFAULT_FACILITATOR_URL == "https://x402.org/facilitator"`** — the public facilitator is
+  already the default, so no config is needed to use it.
+  `FacilitatorConfig(url=..., timeout=30.0, http_client=None, auth_provider=None,
+  identifier=None)`; `HTTPFacilitatorClient(config)` / `HTTPFacilitatorClientSync(config)`.
+- **CAREFUL — the two config objects disagree on case:**
+  `ResourceConfig(*, scheme, payTo, price, network, maxTimeoutSeconds=None, extra=None)` is
+  **camelCase**, while `PaymentOption(scheme, pay_to, price, network,
+  max_timeout_seconds=None, extra=None)` is **snake_case**. Same concept, two spellings.
+- **The ASGI middleware needs the ASYNC server**, not the sync one:
+  `PaymentMiddlewareASGI(app, routes: RoutesConfig, server: x402ResourceServer,
+  paywall_config=None, paywall_provider=None)`. Sync variants (`x402ResourceServerSync`,
+  `HTTPFacilitatorClientSync`) exist but are for non-ASGI use. Our own route handlers can
+  still be plain `def` — FastAPI runs those in a threadpool.
+- `RoutesConfig = RouteConfigDict | dict[str, RouteConfigDict]`, i.e. path -> config.
+  `RouteConfig(accepts, resource=None, description=None, mime_type=None, ...)`.
+- Server methods: `.register(network, server)`, `.initialize()`,
+  `.build_payment_requirements(config)`, `.verify_payment(...)`, `.settle_payment(...)`.
+- Client: `x402ClientSync(payment_requirements_selector=None)` with `.register(network,
+  client)`, `.set_spend_controls(controls)`, `.create_payment_payload(...)`. Convenience:
+  `register_exact_evm_client(client, signer, networks=None, policies=None)`.
+  `x402_requests(client, **adapter_kwargs) -> requests.Session` — pays a 402 and retries by
+  itself. `DEFAULT_MAX_AMOUNT_PER_PAYMENT == "$1"`. `SpendControls` is a TypedDict, so
+  `{"max_amount_per_payment": "$1"}` is the right shape.
+- Signer: `EthAccountSigner(account)` where account is an `eth_account` `LocalAccount`, i.e.
+  `Account.from_key(key)`.
+- **`decode_payment_response_header(value) -> SettleResponse`** is how the receipt is read.
+  `SettleResponse` fields: `success: bool`, `transaction: str` (**the tx hash**), `network:
+  str`, `payer`, `amount`, `error_reason`, `error_message`.
+- **Base Sepolia USDC resolves on its own** — no token address needed in our config:
+  `get_default_asset("eip155:84532")` returns
+  `{'asset': '0x036CbD53842c5426634e7929541eC2318f3dCF7e', 'name': 'USDC', 'version': '2',
+  'decimals': 6, 'symbol': 'USDC'}`. `is_valid_network` accepts both `eip155:84532` and
+  `eip155:8453`.
+- Extras, read off pypi.org/pypi/x402/json: `evm` (eth-abi, eth-account, eth-keys, eth-utils,
+  web3>=7), `fastapi` (fastapi[standard]>=0.115, starlette), `requests`, `clients`, `servers`,
+  `mechanisms`, `svm`, `tvm`, `extensions`, `mcp`, `all`. We install
+  `x402[evm,fastapi,requests]`.
+
+## Facilitator support, checked live (2026-09-03, GET https://x402.org/facilitator/supported)
+
+- Networks include **`eip155:84532` (Base Sepolia)**. **`eip155:8453` (Base mainnet) is NOT
+  listed.** So the free public facilitator is testnet-only, and mainnet would need a different
+  (probably CDP, probably keyed) facilitator plus real USDC.
+- Schemes: `exact`, `upto`, `batch-settlement` at x402Version 2; `exact` at v1.
+- **Decision (2026-09-03): build on Base Sepolia.** The rules ask only for "an executed
+  onchain action" and never say mainnet; the free facilitator supports no mainnet at all;
+  prizes are paid in USDC and the organisers "help winners set up a wallet", so entrants are
+  not assumed to hold mainnet funds; and a rival entry is openly on Base Sepolia. The Discord
+  question was never answered and we are no longer waiting for it.
+
+## Event rules, re-read in full (2026-09-03, hack.sibyllabs.org/rules)
+
+- Score is `(rubric + PMF bonus) × multiplier`.
+- Multiplier wording: "Verified partner stacks lift your score on a diminishing schedule:
+  **+15% for the first, +10% for the second, capped at x1.25**."
+- Base qualifies via: "An executed onchain action earns the bonus: a wallet operation, an x402
+  payment, a B20 read, or a contract interaction shown in the demo."
+- The sentence that shapes the design: "**A stack counts only when a judge can see it doing
+  real work in the demo, serving the product's actual function.**"
+- README must state "which partner stacks and where".
+- "Fabricated evidence is a disqualification, including after payout."
+
 ## Event rules (2026-08-31, hack.sibyllabs.org/rules — full copy in
 hackathon_ideas/contexts/sibyl-labs-hackathon.md)
 

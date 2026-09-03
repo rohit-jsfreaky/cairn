@@ -122,3 +122,34 @@ them signed in. Nothing here is demo-site-only any more.
   can be configured from `.mcp.json` at all — before this there was no way to.
   `cairn_forget` now reports what it withdrew from the commons and what it cannot reach.
   **80 tests, ruff clean.**
+
+- **2026-09-03 (Phase 5b — Base x402 — BUILT)** — a trail you can sell. The original plan
+  assumed payment could be bolted onto the local commons; it could not, because x402 is
+  defined by an HTTP 402 exchange and the commons is two Sibyl tenants in one local file with
+  no network anywhere. So the phase grew an HTTP boundary: `cairn sell` serves this agent's
+  shared trails, `cairn buy` (and the `cairn_buy` MCP tool) pays for one. That also closes a
+  real gap — two agents could previously only share memory by sharing a database file.
+  Design rules held to: browsing the catalogue is FREE and carries no steps or locators (it
+  reuses `describe_offer`, a shape with none in it to leak); the trail is genuinely
+  unreachable without a settled payment; **the trail never goes on chain**, only the payment
+  does; and the local commons stays free, because charging your own second agent on your own
+  laptop is theatre. All x402 lives in ONE file, `payments.py`, mirroring the `store.py` rule
+  — `shop.py` goes through `payments.gate()` rather than importing the SDK, and a test walks
+  the source to keep it that way.
+  Borrowing and buying now share `_import_offer`, so a bought trail gets the same provenance,
+  the same protection over a repaired trail and the same note merging. Two import paths would
+  have drifted, and the paid one is the one nobody exercises by accident.
+  **518 engine + 98 MCP tests, ruff clean.** Four new deletion-gate tests are the ones that
+  matter: a bought trail can still be forgotten, the transaction cannot bring it back, the
+  seller's shelf empties when the seller forgets, and the buyer keeps what it paid for when
+  the seller forgets.
+  Facts were read off the INSTALLED SDK, not its docs, which were wrong twice: `ResourceConfig`
+  takes `payTo` (camelCase) while `PaymentOption` takes `pay_to`, and the ASGI middleware needs
+  the async resource server. Also found: the middleware skips settlement on any 4xx, so a
+  buyer who pays for a trail the shop does not have gets a 404 and an untouched wallet.
+  No new `events.py` types: share and borrow do not emit any either, the cold journal is the
+  record, and three event classes nothing subscribes to would be dead code.
+  **Still needed from Rohit: a funded wallet.** Everything up to the signature is verified —
+  a live shop answering a real `HTTP/1.1 402 Payment Required`, the challenge naming Base
+  Sepolia and the real USDC contract `0x036CbD…F7e`, and a purchase attempt that reached the
+  facilitator and failed only on funds.

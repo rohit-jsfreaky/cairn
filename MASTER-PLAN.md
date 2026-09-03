@@ -131,13 +131,23 @@ RESEARCH.md, never used). This is also the prerequisite for 5b.
 **FINISH LINE:** two agents with different tenant ids. Agent B has never seen the site,
 finds A's trail through memory, and completes the task in one call with zero model calls.
 
-## Phase 5b — Base x402 · Sep 8 · `package/` → `package/PLAN.md` §Phase-5 — CUTTABLE
+## Phase 5b — Base x402 · BUILT 2026-09-03 · `package/`
 
-**BLOCKED** until Discord answers the testnet question. Adds payment to 5a: agent B pays for
-agent A's playbook via x402 on Base Sepolia before importing it.
+No longer blocked. The Discord testnet question was never answered and we stopped waiting:
+the rules ask only for "an executed onchain action", the free public facilitator supports no
+mainnet at all, and moving to mainnet is three environment variables. Reasoning and sources
+in RESEARCH.md.
+
+**One thing the original plan missed:** x402 is defined by an HTTP 402 exchange, and the
+commons is two Sibyl tenants in one local file with no network. So the phase grew an HTTP
+boundary — `cairn sell` (a shop) and `cairn buy` — which also fixes a real gap, because two
+agents could previously only share memory by sharing a database file.
 
 **FINISH LINE:** one x402 payment visible on the Base Sepolia explorer, made during a run,
-playbook transferred and used.
+playbook transferred and used. **Code and tests done; the settled payment needs Rohit's
+funded wallet.** Everything up to the signature is verified — a live shop answering a real
+`HTTP/1.1 402 Payment Required`, the challenge naming Base Sepolia and the real USDC
+contract, and a purchase attempt that reached the facilitator and failed only on funds.
 
 ## Phase 6 — Harden + ship · Sep 8–10 · root
 
