@@ -600,7 +600,10 @@ class RunMetrics:
     duration_ms: int = 0
     steps_total: int = 0
     steps_replayed: int = 0
-    steps_repaired: int = 0
+    # How many times this TRAIL has ever been repaired. Not a per-run count: a run
+    # never repairs anything. It stops at the broken step and hands that one step
+    # back, and the fix arrives later as a separate call.
+    trail_repairs: int = 0
     tool_calls: int = 0
     model_calls: int = 0
     pages_read: int = 0
@@ -615,7 +618,7 @@ class RunMetrics:
             "duration_ms": self.duration_ms,
             "steps_total": self.steps_total,
             "steps_replayed": self.steps_replayed,
-            "steps_repaired": self.steps_repaired,
+            "trail_repairs": self.trail_repairs,
             "tool_calls": self.tool_calls,
             "model_calls": self.model_calls,
             "pages_read": self.pages_read,
@@ -632,7 +635,7 @@ class RunMetrics:
             duration_ms=raw.get("duration_ms", 0),
             steps_total=raw.get("steps_total", 0),
             steps_replayed=raw.get("steps_replayed", 0),
-            steps_repaired=raw.get("steps_repaired", 0),
+            trail_repairs=raw.get("trail_repairs", 0),
             tool_calls=raw.get("tool_calls", 0),
             model_calls=raw.get("model_calls", 0),
             pages_read=raw.get("pages_read", 0),

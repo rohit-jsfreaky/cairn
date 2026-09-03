@@ -253,6 +253,46 @@ class TestRealBreak:
         assert again.metrics.model_calls == 0
         assert again.metrics.steps_replayed == 6
 
+    def test_the_run_reports_how_often_this_trail_has_been_repaired(
+        self, learned, store: CairnStore, browser, demo_server
+    ):
+        """This number used to be structurally impossible and printed anyway.
+
+        The old field was `steps_repaired` on the run, which nothing ever incremented,
+        because a run cannot repair anything — it stops at the broken step and the fix
+        arrives as a separate call. So the CLI printed "0 repaired" after every single run,
+        including runs of a trail that had been repaired. It now reports the trail's real
+        repair history, and this test is what stops it going quiet again.
+        """
+        domain = domain_of(demo_server)
+        executor = Executor(store, browser)
+
+        clean = executor.run(domain, start_url=f"{demo_server}/")
+        assert clean.metrics.trail_repairs == 0, "nothing has been repaired yet"
+
+        broken = executor.run(domain, start_url=f"{demo_server}/?variant=b")
+        fixed = next(c for c in broken.repair.candidates if c["name"] == "Get PDF")
+        executor.apply_repair(domain, broken.repair.step_index, Locator("css", fixed["css"]))
+
+        after = Executor(store, browser).run(domain, start_url=f"{demo_server}/?variant=b")
+
+        assert after.ok is True
+        assert after.metrics.trail_repairs == 1, "the repair that just happened must show up"
+
+    def test_and_the_event_carries_it_too(self, learned, store: CairnStore, browser, demo_server):
+        """The CLI renders the event, not the metrics, so the event is what must be right."""
+        domain = domain_of(demo_server)
+        executor = Executor(store, browser)
+        broken = executor.run(domain, start_url=f"{demo_server}/?variant=b")
+        fixed = next(c for c in broken.repair.candidates if c["name"] == "Get PDF")
+        executor.apply_repair(domain, broken.repair.step_index, Locator("css", fixed["css"]))
+
+        emitter = Emitter()
+        Executor(store, browser, emitter=emitter).run(domain, start_url=f"{demo_server}/?variant=b")
+
+        finished = emitter.of_kind("run_finished")[0].to_dict()
+        assert finished["trail_repairs"] == 1
+
     def test_the_repair_is_journalled(self, learned, store: CairnStore, browser, demo_server):
         domain = domain_of(demo_server)
         executor = Executor(store, browser)

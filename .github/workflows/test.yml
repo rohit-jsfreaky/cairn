@@ -1,0 +1,77 @@
+# Cairn runs on Linux too — proved here rather than assumed.
+#
+# Everything was built and tested on Windows. This workflow installs from a clean checkout
+# the way the README tells a stranger to, on Ubuntu, and runs the whole suite. If a path
+# separator or a `.exe` ever creeps into the engine, this is what catches it.
+#
+# Two Python versions because the README promises "3.11 or newer", and a promise nobody
+# checks is a guess. They run in parallel, so this costs wall-clock nothing.
+#
+# `[market]` is installed on purpose. Both market test files start with
+# `pytest.importorskip("x402")`, so without the extra the 47 tests covering the Base and
+# x402 payment path would silently vanish and the run would still be green.
+
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: python ${{ matrix.python }} on ubuntu
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            package/pyproject.toml
+            mcp/pyproject.toml
+
+      - name: Install Cairn
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "package[dev,market]" -e "mcp[dev]"
+
+      # --with-deps pulls the system libraries headless Chromium needs on a bare runner.
+      # No real Chrome here on purpose: that exercises the fallback to bundled Chromium,
+      # which is the path most people actually hit.
+      - name: Install the browser
+        run: python -m playwright install --with-deps chromium
+
+      - name: Engine tests
+        working-directory: package
+        run: python -m pytest -q
+
+      - name: MCP tests
+        working-directory: mcp
+        run: python -m pytest -q
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Pinned to the version used locally, so CI and a laptop never disagree about style.
+      - run: python -m pip install ruff==0.16.5
+
+      - name: Check
+        run: |
+          python -m ruff check package/src package/tests package/benchmark.py
+          python -m ruff check mcp/src mcp/tests
+          python -m ruff format --check package/src package/tests package/benchmark.py
+          python -m ruff format --check mcp/src mcp/tests

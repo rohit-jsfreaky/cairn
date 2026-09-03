@@ -46,7 +46,7 @@ class RunFinished(Event):
     succeeded: bool = False
     duration_ms: int = 0
     steps_replayed: int = 0
-    steps_repaired: int = 0
+    trail_repairs: int = 0
     model_calls: int = 0
 
 

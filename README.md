@@ -34,8 +34,12 @@ python -m venv .venv
 Then point your AI at it. For Claude Code, from the folder you want to work in:
 
 ```bash
-claude mcp add cairn -- /absolute/path/to/cairn/.venv/Scripts/cairn-mcp.exe
+claude mcp add cairn -- /absolute/path/to/cairn/.venv/Scripts/cairn-mcp.exe   # Windows
+claude mcp add cairn -- /absolute/path/to/cairn/.venv/bin/cairn-mcp           # macOS / Linux
 ```
+
+Opening Claude Code **inside this repository** needs none of that — the checked-in
+`.mcp.json` offers the server straight away, on any operating system.
 
 Cursor and Codex take the same command in their own MCP config. Cairn is one stdio server
 with no arguments, so anything that speaks MCP will run it.
@@ -301,7 +305,11 @@ cannot be repaired.
 ## Development
 
 ```bash
-cd package && ../.venv/Scripts/python -m pytest      # 518 tests
+# Install the market extra first, or the 47 tests covering the Base payment path
+# are skipped and the run still says "all passed".
+.venv/Scripts/python -m pip install -e "package[dev,market]" -e "mcp[dev]"
+
+cd package && ../.venv/Scripts/python -m pytest      # 521 tests
 cd mcp     && ../.venv/Scripts/python -m pytest      #  98 tests
 ../.venv/Scripts/python -m ruff check src/ tests/
 ```

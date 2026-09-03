@@ -222,6 +222,20 @@ def invoice_file(invoice_id: str) -> Response:
     )
 
 
+def _how_to_stop(port: int) -> list[str]:
+    """How to free a busy port, in the shell the reader is actually using.
+
+    This used to print `netstat` and `taskkill` on every platform, which is simply wrong
+    advice for two thirds of the people who might read it.
+    """
+    if sys.platform == "win32":
+        return [
+            f"  to stop it   netstat -ano | findstr :{port}",
+            "               taskkill /PID <pid> /F",
+        ]
+    return [f"  to stop it   lsof -ti:{port} | xargs kill"]
+
+
 def _port_is_free(host: str, port: int) -> bool:
     with socket.socket() as probe:
         return probe.connect_ex((host, port)) != 0
@@ -246,8 +260,7 @@ def main() -> int:
                     "",
                     f"  open it      http://{args.host}:{args.port}/",
                     f"  or use       python {script} --port {args.port + 1}",
-                    f"  to stop it   netstat -ano | findstr :{args.port}",
-                    "               taskkill /PID <pid> /F",
+                    *_how_to_stop(args.port),
                 ]
             ),
             file=sys.stderr,

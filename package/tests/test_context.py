@@ -380,3 +380,31 @@ class TestAProfileBelongsToOneBrowser:
         running._open_profile()
 
         assert running.profile_note is None
+
+    def test_a_machine_with_no_browser_is_told_to_install_one(self, tmp_path) -> None:
+        """The very first thing a stranger following the README does is install Cairn and
+        run it. Before this, that person was told their profile was unusable and invited to
+        delete it — on a machine that had simply never downloaded a browser.
+
+        `_is_missing_browser` existed the whole time; it was only ever consulted on the
+        clean-mode path, and profile mode is the default.
+        """
+        from playwright.sync_api import Error as PlaywrightError
+
+        from cairn.browser import ProfileUnavailable
+
+        class NothingInstalled:
+            def launch_persistent_context(self, *args, **kwargs):
+                raise PlaywrightError(
+                    "Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome"
+                )
+
+        running = self._stub(tmp_path, NothingInstalled())
+
+        with pytest.raises(ProfileUnavailable) as raised:
+            running._open_profile()
+
+        said = str(raised.value)
+        assert "playwright install chromium" in said
+        assert "Nothing is wrong with your profile" in said
+        assert "delet" not in said.lower(), "never send somebody to delete a profile that is fine"

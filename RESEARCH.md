@@ -469,9 +469,13 @@ of speaking MCP — the backend in Phase 3 needs exactly the same thing.
 
 ## OPEN QUESTIONS (do not build on assumptions for these)
 
-1. Does Base **Sepolia** count for the partner bonus, or mainnet only? → asked in Discord,
-   no answer yet. Phase 4b blocked until answered.
-2. Pre-Sep-1 scaffolding OK if declared as prior work? → asked in Discord.
+1. ~~Does Base **Sepolia** count for the partner bonus, or mainnet only?~~ — CLOSED BY
+   DECISION 2026-09-03, never answered in Discord. Reasoning and sources in the "Facilitator
+   support" section above. Built and shipped on Sepolia; a real payment settled 2026-09-03.
+2. Pre-Sep-1 scaffolding OK if declared as prior work? → asked in Discord, still no answer.
+   Declared in the README either way, so nothing is blocked on it.
 3. ~~Anthropic API key + budget~~ — CLOSED: no Anthropic, see Model policy above.
-4. Exact x402 Python SDK usage (package `x402` 2.21.0) — open its docs before Phase 5.
+4. ~~Exact x402 Python SDK usage (package `x402` 2.21.0)~~ — CLOSED 2026-09-03. Read off the
+   installed package rather than its docs, which were wrong twice. See the "real API"
+   section above.
 5. ~~sibyl-memory-client: confirm Windows path handling~~ — CLOSED 2026-09-01, it works.

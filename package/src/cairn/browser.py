@@ -34,7 +34,6 @@ from urllib.parse import urlparse
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Locator as PWLocator
 from playwright.sync_api import Page, sync_playwright
-from playwright.sync_api import TimeoutError as PWTimeout
 
 from . import snapshot as aria
 from .models import Locator
@@ -250,13 +249,28 @@ def _browser_name(channel: str | None) -> str:
     return "Chrome" if channel == REAL_CHROME else "the bundled Chromium"
 
 
-def _why_refused(profile: Path, problem: BaseException) -> str:
+def _why_refused(profile: Path, problem: BaseException, *, bundled_failure: BaseException) -> str:
     """Say what happened, without inventing a cause we cannot know.
 
     Playwright reports the same "target closed" words whether another browser already
     holds the profile or the profile itself is unusable. Naming one of those was a guess,
     and it sent people hunting for a browser window that was never open.
+
+    The first case below is separate because it has a one-line fix and nothing to do with
+    the profile. `_is_missing_browser` was only ever consulted on the clean-mode path, so
+    somebody who had installed Cairn but not yet its browser — the very first thing a
+    stranger following the README does — was told their profile was broken and invited to
+    delete it. Only the BUNDLED attempt is checked: a machine can perfectly well have no
+    real Chrome while Chromium works fine, and that is not this problem.
     """
+    if _is_missing_browser(bundled_failure):
+        return (
+            "Cairn has no browser to drive yet. Chromium is a separate download from the "
+            "Python package, so a fresh install needs one more command:\n"
+            "    python -m playwright install chromium\n"
+            "Nothing is wrong with your profile."
+        )
+
     said = str(problem).split("Browser logs:")[0].strip().replace("\n", " ")
     return (
         f"Cairn could not open its browser profile at {profile}. Neither Chrome nor the "
@@ -422,8 +436,14 @@ class Browser:
             spare = None if owner == REAL_CHROME else REAL_CHROME
             try:
                 context = self._profile_opened_by(spare)
-            except PlaywrightError:
-                raise ProfileUnavailable(_why_refused(self._profile, refused)) from refused
+            except PlaywrightError as spare_refused:
+                # Which of the two attempts used the bundled Chromium — the one
+                # `playwright install` provides, and so the one that answers "is there a
+                # browser on this machine at all?"
+                bundled = spare_refused if spare is None else refused
+                raise ProfileUnavailable(
+                    _why_refused(self._profile, refused, bundled_failure=bundled)
+                ) from refused
             if used_before:
                 self.profile_note = (
                     f"{_browser_name(owner)} would not open Cairn's browser profile, so "
@@ -786,7 +806,10 @@ class Browser:
             # receive a click. Visible also waits for it to stop moving.
             found.first.wait_for(state="visible", timeout=timeout_ms)
             return found.first
-        except (PWTimeout, Exception):
+        except PlaywrightError:
+            # Playwright's own base error, which a timeout is a subclass of. This used to
+            # read `(PWTimeout, Exception)`, where the second clause swallowed everything —
+            # including a real bug in `_to_playwright` — and reported it as ordinary drift.
             return None
 
     def _to_playwright(self, locator: Locator) -> PWLocator | None:
@@ -875,12 +898,15 @@ class Browser:
             return True
         try:
             return self.page.locator('input[type="password"]').count() > 0
-        except Exception:
+        except PlaywrightError:
+            # A closed or navigating page cannot be asked. That is not a signed-out page.
             return False
 
     def text(self) -> str:
         """Visible page text, used only for postcondition checks — never sent to a model."""
         try:
             return self.page.inner_text("body")
-        except Exception:
+        except PlaywrightError:
+            # Mid-navigation there is no body to read yet. An empty string fails the
+            # postcondition, which is the right answer, rather than raising.
             return ""

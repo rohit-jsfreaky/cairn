@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "cairn": {
-      "command": ".venv/Scripts/cairn-mcp.exe",
-      "args": [],
+      "command": "python",
+      "args": ["mcp-server.py"],
       "env": {}
     }
   }

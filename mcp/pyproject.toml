@@ -3,19 +3,45 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cairn-mcp"
+name = "cairn-browser-mcp"
 version = "0.1.0"
 description = "Cairn as MCP tools: a browser with a memory, for Claude Code, Cursor and Codex."
 requires-python = ">=3.11"
 license = "MIT"
+readme = "README.md"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing :: Acceptance",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+]
 authors = [{ name = "Rohit Kashyap" }]
 dependencies = [
-    "cairn",
-    "mcp>=1.29.1",
+    "cairn-browser",
+    # Capped at <2 deliberately, and it is not cosmetic. In mcp 2.x `FastMCP` was renamed
+    # to `MCPServer` and other APIs changed with it, so `from mcp.server.fastmcp import
+    # FastMCP` raises ModuleNotFoundError on import and the server never starts.
+    # This venv happened to hold 1.29.1 from an earlier install, so every test passed while
+    # a fresh `pip install` was completely broken — found by installing the built wheels
+    # into a clean virtualenv, 2026-09-04. Migrating to 2.x is post-deadline work.
+    "mcp>=1.29.1,<2",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# `cairn_buy` needs the payment code, which lives in the engine's optional extra.
+# Declaring it here means one install is enough, instead of relying on somebody having
+# put the engine's extra into the same virtualenv by hand.
+market = ["cairn-browser[market]"]
+
+[project.urls]
+Homepage = "https://github.com/rohit-jsfreaky/cairn"
+Repository = "https://github.com/rohit-jsfreaky/cairn"
+Issues = "https://github.com/rohit-jsfreaky/cairn/issues"
 
 [project.scripts]
 cairn-mcp = "cairn_mcp.__main__:main"
@@ -34,4 +60,8 @@ line-length = 100
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+# BLE catches `except Exception`. It is here because that exact shape has already
+# caused two incidents in this project: a silent sign-out, and an error that blamed
+# the browser profile for every possible failure. Where a blind catch is genuinely
+# right, mark it `# noqa: BLE001` with the reason.
+select = ["E", "F", "I", "UP", "B", "SIM", "BLE"]

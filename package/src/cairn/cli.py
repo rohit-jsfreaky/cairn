@@ -81,12 +81,16 @@ def render(event: Event) -> None:
         print(f"  {TICK} repaired step {data['index']}: {data['before']} -> {data['after']}")
     elif kind == "run_finished":
         state = "done" if data["succeeded"] else "stopped"
+        # Mentioned only when it has actually happened. This line used to print
+        # "0 repaired" on every run, because a run cannot repair anything: it stops at the
+        # broken step and hands that one step back, and the fix arrives as a separate call.
+        mended = data["trail_repairs"]
+        history = f"  ·  repaired {mended}x before" if mended else ""
         print(
             f"\n  {state} in {data['duration_ms']}ms  ·  "
             f"{data['steps_replayed']} steps from memory  ·  "
-            f"{data['steps_repaired']} repaired  ·  "
             f"1 tool call  ·  "
-            f"{data['model_calls']} model calls\n"
+            f"{data['model_calls']} model calls{history}\n"
         )
     elif kind == "forgotten":
         print(f"  {TICK} forgot {data['domain']}")

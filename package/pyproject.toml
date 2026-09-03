@@ -3,11 +3,25 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cairn"
+# "cairn" and "cairn-mcp" are both taken on PyPI by unrelated projects (checked
+# 2026-09-04). Only the DISTRIBUTION name changes — the import package is still
+# `cairn` and the command is still `cairn`.
+name = "cairn-browser"
 version = "0.1.0"
 description = "A browser memory for AI agents: learn a site once, replay the trail with no model calls."
 requires-python = ">=3.11"
 license = "MIT"
+readme = "README.md"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing :: Acceptance",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+]
 authors = [{ name = "Rohit Kashyap" }]
 dependencies = [
     "sibyl-memory-client>=0.8.0",
@@ -20,6 +34,11 @@ dev = ["pytest>=8.0", "fastapi>=0.141.1", "uvicorn>=0.52.4"]
 # wants a browser with a memory should not have to install a web server and a blockchain
 # library. Extra names read off pypi.org/pypi/x402/json on 2026-09-03, not guessed.
 market = ["x402[evm,fastapi,requests]>=2.21.0", "fastapi>=0.141.1", "uvicorn>=0.52.4"]
+
+[project.urls]
+Homepage = "https://github.com/rohit-jsfreaky/cairn"
+Repository = "https://github.com/rohit-jsfreaky/cairn"
+Issues = "https://github.com/rohit-jsfreaky/cairn/issues"
 
 [project.scripts]
 cairn = "cairn.cli:main"
@@ -35,7 +54,11 @@ line-length = 100
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+# BLE catches `except Exception`. It is here because that exact shape has already
+# caused two incidents in this project: a silent sign-out, and an error that blamed
+# the browser profile for every possible failure. Where a blind catch is genuinely
+# right, mark it `# noqa: BLE001` with the reason.
+select = ["E", "F", "I", "UP", "B", "SIM", "BLE"]
 ignore = ["B008"]
 
 [tool.ruff.lint.per-file-ignores]

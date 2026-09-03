@@ -46,7 +46,6 @@ class Morning:
     seconds: float
     calls: int
     reads: int
-    repairs: int = 0
 
 
 def _free_port() -> int:
@@ -149,7 +148,6 @@ def main() -> int:
             )
             again, _ = from_memory(browser, store, "Thursday", url=f"{url}/?variant=b")
             thursday.calls += 2  # the repair, and the run that followed it
-            thursday.repairs = 1
         week.append(thursday)
 
         _, friday = from_memory(browser, store, "Friday", url=f"{url}/?variant=b")

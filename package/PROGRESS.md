@@ -760,3 +760,49 @@ is the biggest remaining gap between "demo" and "product".
   Test wallets live in `~/.cairn/wallet.env` and `~/.cairn/alice-shop.env`, outside the repo.
   They hold faucet money only and are worth nothing anywhere.
   **518 engine + 98 MCP tests, ruff clean.**
+
+- **2026-09-04 (Phase 6 — hardening, part one)** — an audit before touching anything, then
+  the fixes. Five real bugs, not tidying:
+  1. **`steps_repaired` had never once been true.** `executor.py` hardcoded it to 0 and
+     nothing incremented it, because a run cannot repair anything — it stops at the broken
+     step and the fix arrives as a separate call. The CLI printed "0 repaired" after every
+     run regardless, including runs of a trail that HAD been repaired, and `benchmark.py`
+     faked its own repair count by hand to make the README table read right. Replaced with
+     `trail_repairs`, which is the trail's real repair history, mentioned only when it is
+     non-zero. Two tests now hold it in place.
+  2. **Three blind `except Exception`** — including `except (PWTimeout, Exception)` in
+     `resolve()`, where the second clause swallowed the first along with any real bug in
+     `_to_playwright` and reported it as ordinary site drift. All narrowed to
+     `PlaywrightError`, so only the browser's own failures count as drift and a fault of
+     ours surfaces as itself. **`BLE` added to ruff's `select`** in both packages so this
+     cannot come back — it had already caused two incidents here.
+  3. **A machine with no browser was told its profile was broken** and invited to delete it.
+     `_is_missing_browser` existed but was only consulted on the clean-mode path, and
+     profile mode is the default. It now says `playwright install chromium` and explicitly
+     that nothing is wrong with the profile.
+  4. **The front door was Windows-only.** `.mcp.json` named `.venv/Scripts/cairn-mcp.exe`,
+     and Claude Code reads that file the moment anyone opens the repo — so a judge on a Mac
+     got a broken server before reading a word. Now it runs `mcp-server.py`, a launcher that
+     finds the venv on either layout. The README shows both `claude mcp add` commands, and
+     the demo site's busy-port help no longer prints `netstat`/`taskkill` to Linux users.
+  5. **`mcp>=1.29.1` let a fresh install pick up mcp 2.x, where `FastMCP` was renamed to
+     `MCPServer`.** The server raised ModuleNotFoundError on import and never started. This
+     venv held 1.29.1 from an earlier install, so all 616 tests passed while a stranger's
+     `pip install` was completely broken. **This is the one that would have hit every
+     judge.** Found by building the wheels and installing them into a clean Python 3.11
+     virtualenv. Pinned to `<2`; migrating to 2.x is post-deadline work.
+
+  Also: the 47 payment tests are `importorskip`-gated, so the README's Development block now
+  installs `[market]` first — otherwise "all tests passed" can be true while none of the
+  Base code ran. CI does the same.
+
+  **Packaging.** `cairn` and `cairn-mcp` are both taken on PyPI by unrelated projects, so
+  the distributions are now **`cairn-browser`** and **`cairn-browser-mcp`**. Only the
+  distribution names changed: the import package is still `cairn` and the commands are still
+  `cairn` and `cairn-mcp`. Added readmes, classifiers and project URLs so the PyPI pages are
+  not blank. All four artefacts pass `twine check`, and both wheels install and run from a
+  clean Python 3.11 venv.
+
+  **CI.** `.github/workflows/test.yml` installs from scratch on Ubuntu against Python 3.11
+  and 3.13, runs both suites with `[market]`, and checks ruff. It cannot run until Rohit
+  pushes. The lint commands were verified locally from the repo root first.

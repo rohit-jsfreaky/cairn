@@ -114,7 +114,8 @@ Dashboard (Phase 4) — still blocked on `backend/`. Do not start it early.
 - ~~`metadataBase` is not set in `app/layout.tsx`~~ — **FIXED 2026-09-03.** It now reads
   `NEXT_PUBLIC_SITE_URL` and falls back to localhost, so `next build` is warning-free and the
   share card resolves as soon as that variable is set to the real domain.
-- Footer links (GitHub, Prior work, License) point at `#` until the repo exists.
+- ~~Footer links (GitHub, Prior work, License) point at `#`~~ — FIXED 2026-09-03. They
+  point at the real repository, and external ones open in a new tab.
 
 ## Session log
 

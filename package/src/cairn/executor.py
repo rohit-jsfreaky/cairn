@@ -29,6 +29,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from playwright.sync_api import Error as PlaywrightError
+
 from . import actions, reads
 from .browser import ACCEPT, Browser
 from .events import (
@@ -330,7 +332,11 @@ class Executor:
                 self._do(step, target, domain=self._domain)
             except MissingSecret:
                 raise
-            except Exception:
+            except PlaywrightError:
+                # Only the browser's own failures are drift. A bug of ours — an unknown
+                # action, a malformed step — has to surface as itself instead of being
+                # filed away as "this locator stopped matching", which is where a real
+                # fault would go to die quietly.
                 locator.record_miss()
                 self.events.emit(DriftDetected(index=step.index, locator=label))
                 continue
@@ -457,6 +463,7 @@ class Executor:
             task=playbook.task,
             mode="warm",
             steps_total=len(playbook.steps),
+            trail_repairs=playbook.repairs,
             tool_calls=1,
             model_calls=0,
             duration_ms=int((time.perf_counter() - started) * 1000),
@@ -468,7 +475,7 @@ class Executor:
                 succeeded=False,
                 duration_ms=metrics.duration_ms,
                 steps_replayed=0,
-                steps_repaired=0,
+                trail_repairs=playbook.repairs,
                 model_calls=0,
             )
         )
@@ -599,6 +606,7 @@ class Executor:
     ) -> None:
         metrics.duration_ms = int((time.perf_counter() - started) * 1000)
         metrics.succeeded = succeeded
+        metrics.trail_repairs = playbook.repairs
 
         # Locator hit/miss counts were updated in place while replaying, so saving here
         # is what makes the trail get better every time it is walked.
@@ -615,7 +623,7 @@ class Executor:
                 succeeded=succeeded,
                 duration_ms=metrics.duration_ms,
                 steps_replayed=metrics.steps_replayed,
-                steps_repaired=metrics.steps_repaired,
+                trail_repairs=metrics.trail_repairs,
                 model_calls=0,
             )
         )
