@@ -13,7 +13,7 @@ command for both layouts.
 
 from __future__ import annotations
 
-import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,10 +29,14 @@ CANDIDATES = (
 def main() -> int:
     for interpreter in CANDIDATES:
         if interpreter.is_file():
-            # Replace this process rather than spawning a child: the MCP transport is this
-            # process's stdin and stdout, and an extra layer in between is one more thing
-            # that can buffer, mangle or outlive the conversation.
-            os.execv(str(interpreter), [str(interpreter), "-m", "cairn_mcp"])
+            # A child process that inherits this one's stdin, stdout and stderr, rather
+            # than `os.execv`. Windows has no real exec: Python emulates it by starting a
+            # NEW process and killing this one, so the process id changes underneath the
+            # caller. Claude Code holds the pipes and waits on the process it started, sees
+            # that process exit, and times out after 30 seconds — which is exactly what it
+            # did. Waiting on a child keeps one stable process id and passes the transport
+            # straight through.
+            return subprocess.call([str(interpreter), "-m", "cairn_mcp"])
 
     looked = "\n  ".join(str(path) for path in CANDIDATES)
     sys.exit(

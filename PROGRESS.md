@@ -292,3 +292,30 @@ split out of Phase 5 because it needs no blockchain and no Discord answer.
   **CI.** `.github/workflows/test.yml` installs from scratch on Ubuntu against Python 3.11
   and 3.13, runs both suites with `[market]`, and checks ruff. It cannot run until Rohit
   pushes. The lint commands were verified locally from the repo root first.
+
+- **2026-09-04 (CI went red on the first push — found, reproduced and fixed)** — ruff passed,
+  install passed, the browser installed; **the engine tests failed on both Python 3.11 and
+  3.13.** GitHub would not hand over the logs (log download needs admin rights even on a
+  public repo, and the annotations said only "Process completed with exit code 1"), so it was
+  reproduced locally instead: **WSL Ubuntu, a fresh clone of the pushed commit, the exact CI
+  steps.** It failed there in 55 seconds.
+
+  The failure: `test_a_chrome_profile_stays_on_chrome` asserted `_channel == REAL_CHROME`
+  flatly. **The product was right and the test was wrong.** A Linux runner has no real
+  Chrome, so Cairn correctly fell back to bundled Chromium and reported the swap through
+  `profile_note` — exactly the behaviour built yesterday. The test simply assumed Chrome
+  exists everywhere, which is a Windows assumption.
+
+  Rewritten to pin the rule that actually matters and holds on every platform: **a swap is
+  never silent.** If Chrome opened the profile, there is nothing to report; if it could not,
+  the fallback must say so. That tests more than the old assertion did.
+
+  Both suites now pass on Linux — **521 engine + 98 MCP** — and Linux is markedly faster
+  than Windows (4m22s against about 12 minutes), so CI will not be the slow part.
+
+  Also bumped `actions/checkout` v4 -> v7 and `actions/setup-python` v5 -> v7; the old majors
+  target Node 20, which GitHub now force-runs on Node 24 and warns about. Versions were read
+  off the GitHub API rather than guessed.
+
+  Worth recording plainly: **this is exactly what CI was added for.** 616 tests passed on
+  Windows for days while one of them could not pass on Linux at all.

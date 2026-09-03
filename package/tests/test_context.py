@@ -272,7 +272,16 @@ class TestAProfileBelongsToOneBrowser:
         with Browser(headless=True, profile=profile, downloads=tmp_path / "d") as running:
             assert running._channel is None
 
-    def test_a_chrome_profile_stays_on_chrome(self, tmp_path) -> None:
+    def test_a_chrome_profile_stays_on_chrome_or_says_it_could_not(self, tmp_path) -> None:
+        """A profile Chrome made is opened by Chrome — and where that is impossible, the
+        swap is reported rather than done quietly.
+
+        This used to assert `_channel == REAL_CHROME` flatly, which is only true on a
+        machine that HAS real Chrome. On a Linux CI runner there is none, Cairn correctly
+        falls back to bundled Chromium, and the test failed on behaviour that was right.
+        The rule worth pinning is not "always Chrome" — it is "never a silent swap", and
+        that one holds everywhere.
+        """
         from cairn.browser import PROFILE_OWNER, REAL_CHROME
 
         profile = tmp_path / "profile"
@@ -280,7 +289,11 @@ class TestAProfileBelongsToOneBrowser:
         (profile / PROFILE_OWNER).write_text(REAL_CHROME, encoding="utf-8")
 
         with Browser(headless=True, profile=profile, downloads=tmp_path / "d") as running:
-            assert running._channel == REAL_CHROME
+            if running._channel == REAL_CHROME:
+                assert running.profile_note is None, "its owner opened it; nothing to report"
+            else:
+                assert running.profile_note is not None, "a swap must never be silent"
+                assert "Chrome would not open" in running.profile_note
 
     def test_only_a_missing_browser_counts_as_missing(self) -> None:
         """The failure that started this said "Target page, context or browser has been
