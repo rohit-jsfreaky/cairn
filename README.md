@@ -239,6 +239,39 @@ Entities are unique per `(tenant, category, name)` at the schema level, so a sit
 hold two conflicting routes for the same task. Agent identity is a tenant, which is what makes
 one agent's memory genuinely invisible to another.
 
+## How memory made this possible
+
+Memory is not a speed-up bolted onto a working agent. It is the product. Take the Sibyl layer
+out and what is left is a Playwright wrapper that reads a page from scratch every time — which
+is the thing every AI already does, and the thing Cairn exists to stop.
+
+Three specific abilities exist **only** because of the memory layer:
+
+**A route outlives the session.** The warm `playbook` entity is what turns a browsing session
+into something a later run can execute. Entities are unique per `(tenant, category, name)` at
+the schema level, so one site and one task can never hold two conflicting routes — the fast
+path is safe to trust without a single model call to check it.
+
+**The route gets better every time it runs — that is stored, not recomputed.** Each step keeps
+up to nine ways to find its control, ranked by which have actually worked, plus a health score
+and the checks that prove the step landed. Every run writes that ranking back. This is why a
+changed site costs one repaired step instead of a fresh exploration: Cairn knows which locator
+died and which still holds, because the outcome of every previous run is in memory. Wipe it and
+there is nothing to repair *from* — only re-learning.
+
+**Agents can hand routes to each other.** Identity is a Sibyl tenant, so one agent's memory is
+genuinely invisible to another. Sharing, borrowing, and buying a trail over x402 are all moves
+inside the memory layer — a copy from one tenant to the `cairn-commons` tenant and back. There
+is no other channel between two Cairn agents. Remove the layer and they cannot coordinate at
+all.
+
+Underneath, the cold tier (`write_event`) records every run, drift, repair, share, borrow and
+purchase in order. That is what makes health scores and `cairn show` true rather than guessed.
+
+**The deletion test is one command.** `cairn forget --site github.com` and the next run raises
+`NoTrailError` — it does not quietly fall back to exploring, it stops and says the memory is
+gone. Slow again, honestly. That is what load-bearing means here.
+
 ## Forgetting
 
 ```bash

@@ -942,8 +942,8 @@ is the biggest remaining gap between "demo" and "product".
   versions without paying for six runners. Two things Windows needed: `shell: bash` on the
   install and both test steps, because Windows runners default to PowerShell and every script
   in the file is bash; and `playwright install-deps chromium` split off into a Linux-only
-  step, since it is apt-based and has nothing to do elsewhere. Cannot be confirmed green
-  until Rohit pushes.
+  step, since it is apt-based and has nothing to do elsewhere. **Pushed and green on all
+  four jobs plus ruff** — so Cairn is now proved on Linux, macOS and Windows, not assumed.
 
   **`cairn doctor` exists** — `package/src/cairn/doctor.py`, 10 tests. It checks the seven
   things Cairn needs that are not Python code: Python version, the installed version, a

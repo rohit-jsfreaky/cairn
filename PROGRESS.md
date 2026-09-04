@@ -461,8 +461,8 @@ split out of Phase 5 because it needs no blockchain and no Discord answer.
   versions without paying for six runners. Two things Windows needed: `shell: bash` on the
   install and both test steps, because Windows runners default to PowerShell and every script
   in the file is bash; and `playwright install-deps chromium` split off into a Linux-only
-  step, since it is apt-based and has nothing to do elsewhere. Cannot be confirmed green
-  until Rohit pushes.
+  step, since it is apt-based and has nothing to do elsewhere. **Pushed and green on all
+  four jobs plus ruff** — so Cairn is now proved on Linux, macOS and Windows, not assumed.
 
   **`cairn doctor` exists** — `package/src/cairn/doctor.py`, 10 tests. It checks the seven
   things Cairn needs that are not Python code: Python version, the installed version, a
@@ -487,3 +487,20 @@ split out of Phase 5 because it needs no blockchain and no Discord answer.
   already; none could be found without hitting them first. `cairn doctor` leads the section.
 
   539 engine tests (was 524 in the README) and 98 MCP tests, ruff clean.
+
+- **2026-09-04 (the README memory note)** — added a section named exactly **"How memory made
+  this possible"**, which the submission rules ask for by name. The substance was already
+  spread across "Where the memory lives" and "Forgetting"; a judge working down a checklist
+  should not have to infer it from two other sections.
+
+  It names the three abilities that exist only because of the memory layer, which is also the
+  language the scoring band uses: a route that outlives the session (warm `playbook`, unique
+  per `(tenant, category, name)`); **dynamic storage** — locator ranking and health written
+  back by every run, which is why a changed site costs one repaired step instead of a fresh
+  exploration; and **coordination** — sharing, borrowing and buying, which are moves between
+  Sibyl tenants and the only channel two Cairn agents have. Then the cold tier as the audit
+  trail, and `cairn forget` raising `NoTrailError` as the deletion test in one command.
+
+  Every claim in it was checked against the code before writing: `record_hit`/`record_miss` on
+  both step and locator, `save_playbook` called back on the replay path (`executor.py:265`,
+  `:637`, `:683`), and `NoTrailError` raised rather than a quiet fall back to exploring.
