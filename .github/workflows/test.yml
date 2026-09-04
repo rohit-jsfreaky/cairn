@@ -54,6 +54,12 @@ jobs:
       # the repository even when the repository is public, so a failure that only exists
       # in the log is invisible to anyone without those rights — which cost a whole
       # push-and-wait cycle to discover. Annotations are public.
+      # One test opens a HEADED browser — the sign-in window a real person uses. A runner
+      # has no display, so that test skips itself here and says so in the output. Giving
+      # the runner a virtual display with xvfb would let it run for real, and is worth
+      # doing later; it is deliberately not being added mid-deadline, because every extra
+      # moving part in this file has cost a red build and a push to find out about.
+      # The headed path is covered on a developer machine, which is also where it is used.
       - name: Engine tests
         working-directory: package
         run: |

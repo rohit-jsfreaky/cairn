@@ -319,3 +319,34 @@ split out of Phase 5 because it needs no blockchain and no Discord answer.
 
   Worth recording plainly: **this is exactly what CI was added for.** 616 tests passed on
   Windows for days while one of them could not pass on Linux at all.
+
+- **2026-09-04 (the second red CI run — a headed browser, and a driver leak behind it)** —
+  the logs Rohit pasted named it immediately, which the API never would have:
+
+      ERROR:ui/ozone/platform/x11/ozone_platform_x11.cc] Missing X server or $DISPLAY
+      ERROR:ui/aura/env.cc:246] The platform failed to initialize.  Exiting.
+
+  `test_the_login_window_is_not_flagged_either` opens a **headed** browser, because the
+  sign-in window is the one a real person uses. A CI runner has no display. WSL never
+  caught it because WSLg provides one — which is why two local reproductions passed while
+  CI kept failing.
+
+  **The second bug is the one that mattered.** `Browser.start()` called
+  `sync_playwright().start()` and only cleaned the driver up for `ProfileUnavailable`. Any
+  other failure left it running — and that driver owns an asyncio loop in the thread, so
+  every LATER browser anywhere in the process died with "It looks like you are using
+  Playwright Sync API inside the asyncio loop". One browser that could not open became
+  **five failures and three errors**, none of which named a display. `start()` now opens
+  inside a try and stops the driver on any failure, re-raising the real reason untouched.
+  Three tests pin it, including the one that actually bit: a browser still starts fine
+  after a failed one.
+
+  The headed test now skips when there is no display and says so. xvfb would let it run on
+  CI for real and is worth adding later; it was deliberately left out mid-deadline, because
+  every extra moving part in that workflow has cost a red build and a push to discover.
+
+  Verified under the exact CI condition — Linux, `DISPLAY` unset: **523 passed, 1 skipped**
+  plus 98 MCP. Windows green too.
+
+  The lesson worth keeping: **WSL is not a CI runner.** It has a display, twelve cores and
+  a warm HOME. Two clean local runs proved nothing about a bare machine.

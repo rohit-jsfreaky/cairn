@@ -7,6 +7,8 @@ saved blob. What is here is the short list that changes whether a real site work
 
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import Iterator
 
 import pytest
@@ -199,7 +201,17 @@ class TestTheBrowserDoesNotAnnounceItself:
         assert browser.page.evaluate("() => navigator.webdriver") is False
 
     def test_the_login_window_is_not_flagged_either(self, tmp_path) -> None:
-        """The headed window is the one that matters — it is where a person signs in."""
+        """The headed window is the one that matters — it is where a person signs in.
+
+        A headed browser needs a display, and a Linux CI runner has none — so this skips
+        there and runs for real on a developer machine, which is also where the sign-in
+        window is actually used. It used to launch regardless, fail, and leave the
+        Playwright driver running, which made the next five tests fail with "Sync API
+        inside the asyncio loop" instead of their own reasons.
+        """
+        if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+            pytest.skip("a headed browser needs a display, and this machine has none")
+
         with Browser(headless=False, downloads=tmp_path / "d") as visible:
             assert visible.page.evaluate("() => navigator.webdriver") is False
 
@@ -421,3 +433,55 @@ class TestAProfileBelongsToOneBrowser:
         assert "playwright install chromium" in said
         assert "Nothing is wrong with your profile" in said
         assert "delet" not in said.lower(), "never send somebody to delete a profile that is fine"
+
+
+class TestAFailedStartLeavesNothingBehind:
+    """The bug that turned one CI failure into six.
+
+    `sync_playwright().start()` brings up a driver owning an asyncio loop in this thread.
+    Leave it running after a failed launch and every LATER browser anywhere in the process
+    dies with "Sync API inside the asyncio loop" — a message that names neither the test
+    that broke nor the reason. On CI, one browser that could not open produced five
+    unrelated failures and three errors, and none of them mentioned the display.
+    """
+
+    @staticmethod
+    def _refusing_browser(tmp_path, monkeypatch) -> Browser:
+        from playwright.sync_api import Error as PlaywrightError
+
+        def will_not_open(self) -> Browser:
+            raise PlaywrightError("Looks like you launched a headed browser without an XServer")
+
+        monkeypatch.setattr(Browser, "_open", will_not_open)
+        return Browser(headless=True, downloads=tmp_path / "d")
+
+    def test_the_driver_is_stopped(self, tmp_path, monkeypatch) -> None:
+        from playwright.sync_api import Error as PlaywrightError
+
+        broken = self._refusing_browser(tmp_path, monkeypatch)
+
+        with pytest.raises(PlaywrightError):
+            broken.start()
+
+        assert broken._playwright is None, "a failed start must not leave a driver running"
+
+    def test_and_the_next_browser_still_works(self, tmp_path, monkeypatch) -> None:
+        """The half that actually bit us: the damage showed up in unrelated tests."""
+        from playwright.sync_api import Error as PlaywrightError
+
+        broken = self._refusing_browser(tmp_path, monkeypatch)
+        with pytest.raises(PlaywrightError):
+            broken.start()
+        monkeypatch.undo()
+
+        with Browser(headless=True, downloads=tmp_path / "after") as recovered:
+            assert recovered.page.evaluate("() => 1 + 1") == 2
+
+    def test_the_real_reason_survives(self, tmp_path, monkeypatch) -> None:
+        """Cleaning up must not swallow or replace what actually went wrong."""
+        from playwright.sync_api import Error as PlaywrightError
+
+        broken = self._refusing_browser(tmp_path, monkeypatch)
+
+        with pytest.raises(PlaywrightError, match="XServer"):
+            broken.start()

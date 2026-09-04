@@ -348,19 +348,29 @@ class Browser:
     # ------------------------------------------------------------- lifecycle
 
     def start(self) -> Browser:
+        """Open a browser, or leave nothing running behind the failure.
+
+        The cleanup is the whole point of the shape here. `sync_playwright().start()`
+        spins up a driver that owns an asyncio loop in this thread; if anything after it
+        raises and that driver is left running, every LATER attempt to start a browser —
+        anywhere in the process — dies with "Sync API inside the asyncio loop" instead of
+        its own reason. On CI one browser that could not open turned into five unrelated
+        failures and three errors, none of which named the real cause.
+        """
         self._playwright = sync_playwright().start()
         self._channel: str | None = REAL_CHROME
+        try:
+            return self._open()
+        except BaseException:
+            self._playwright.stop()
+            self._playwright = None
+            raise
 
+    def _open(self) -> Browser:
+        """Everything after the driver is up. Never called except through `start`."""
         if self._profile is not None:
             self._profile.mkdir(parents=True, exist_ok=True)
-            # Chrome allows one process per profile, and refuses some profiles outright.
-            # Either way the playwright handle must not be left running behind the error.
-            try:
-                self._context = self._open_profile()
-            except ProfileUnavailable:
-                self._playwright.stop()
-                self._playwright = None
-                raise
+            self._context = self._open_profile()
             self._browser = None
             pages = self._context.pages
             self._page = pages[0] if pages else self._context.new_page()
