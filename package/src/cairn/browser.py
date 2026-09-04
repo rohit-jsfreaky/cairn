@@ -139,6 +139,16 @@ DEFAULT_DOWNLOADS = Path.home() / ".cairn" / "downloads"
 # every single time.
 DEFAULT_PROFILE = Path.home() / ".cairn" / "browser-profile"
 
+# Named profiles live beside it, one folder each. A profile is a whole signed-in browser:
+# its own cookies, its own session, its own Chrome process. That is what lets a customer, a
+# vendor and an admin all be signed in AT ONCE instead of a suite signing out and back in
+# between roles — which is slow, and makes the order of the tests matter.
+DEFAULT_PROFILES_DIR = Path.home() / ".cairn" / "profiles"
+
+# The profile that was there before named ones existed. It keeps the ORIGINAL folder, so
+# every sign-in made until now is still exactly where it was.
+DEFAULT_PROFILE_NAME = "default"
+
 # A page that wants a password, or an address that reads like a sign-in, means the session
 # has run out. Used only after a step has already failed, so a login page we navigated to
 # on purpose is never mistaken for one.
@@ -256,6 +266,31 @@ def _keep(kept: list[str], line: str) -> None:
     kept.append(line)
     if len(kept) > MAX_DIAGNOSTICS:
         del kept[0]
+
+
+def profile_named(
+    name: str,
+    *,
+    default: Path | str | None = DEFAULT_PROFILE,
+    root: Path | None = None,
+) -> Path | str | None:
+    """Where a named profile keeps its browser data.
+
+    `default` is answered with whatever this machine was already using, so naming profiles
+    does not quietly move somebody's sign-ins to a new folder and log them out of
+    everything.
+    """
+    if name == DEFAULT_PROFILE_NAME:
+        return default
+    return (root or DEFAULT_PROFILES_DIR) / profile_slug(name)
+
+
+def profile_slug(name: str) -> str:
+    """A folder name from a person's name for a profile. "Vendor A" -> "vendor-a"."""
+    cleaned = "".join(letter if letter.isalnum() else "-" for letter in name.strip().lower())
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    return cleaned.strip("-") or "profile"
 
 
 def domain_of(url: str) -> str:

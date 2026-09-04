@@ -80,15 +80,26 @@ def _profile() -> Check:
     """Only a problem once it exists — a missing one is made on first use."""
     from .browser import DEFAULT_PROFILE, Browser, NoDisplay, ProfileUnavailable
 
+    named = _named_profiles()
+    extra = f" · {len(named)} more: {', '.join(named)}" if named else ""
     if not DEFAULT_PROFILE.exists():
-        return Check("profile", True, "none yet, made on first use", essential=False)
+        return Check("profile", True, f"none yet, made on first use{extra}", essential=False)
     try:
         with Browser(headless=True, profile=DEFAULT_PROFILE, timeout_ms=BROWSER_CHECK_MS) as up:
             opened = up._channel or "bundled Chromium"
             note = f" — {up.profile_note}" if up.profile_note else ""
-            return Check("profile", True, f"opens with {opened}{note}")
+            return Check("profile", True, f"opens with {opened}{extra}{note}")
     except (NoDisplay, ProfileUnavailable) as known:
         return Check("profile", False, "will not open", str(known))
+
+
+def _named_profiles() -> list[str]:
+    """The extra signed-in browsers on this machine, one per role somebody set up."""
+    from .browser import DEFAULT_PROFILES_DIR
+
+    if not DEFAULT_PROFILES_DIR.exists():
+        return []
+    return sorted(folder.name for folder in DEFAULT_PROFILES_DIR.iterdir() if folder.is_dir())
 
 
 def _memory() -> Check:

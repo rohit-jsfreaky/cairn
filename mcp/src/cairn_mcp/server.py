@@ -21,10 +21,19 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from cairn import actions, reads
-from cairn.browser import DEFAULT_PROFILE, NoDisplay, ProfileUnavailable, domain_of
+from cairn.browser import (
+    DEFAULT_PROFILE,
+    DEFAULT_PROFILE_NAME,
+    DEFAULT_PROFILES_DIR,
+    NoDisplay,
+    ProfileUnavailable,
+    domain_of,
+    profile_named,
+)
 from cairn.executor import Executor, NeedsTask, NoTrailError
 from cairn.models import Locator, SiteKnowledge
 from cairn.operations import ActionFailed, Session
@@ -183,7 +192,20 @@ def err(problem: BaseException | str) -> dict[str, Any]:
 
 
 class CairnTools:
-    """Holds the one browser and the one memory store for this MCP connection."""
+    """Holds this connection's browsers and its one memory store.
+
+    Browsers, plural. A profile is a whole signed-in browser — its own cookies, its own
+    session, its own Chrome process — and Cairn keeps as many as are asked for, side by
+    side. That is what lets a customer, a vendor and an admin be signed in AT ONCE.
+
+    With one profile, a suite testing three roles has to sign out and back in between them.
+    That is slow, and worse, it makes the ORDER of the tests matter: one that forgets to
+    sign out breaks the next. Profiles remove both problems.
+
+    Memory is deliberately NOT split by profile. The site is one site however many logins
+    reach it, and what the admin saw is worth knowing when the customer arrives — which is
+    the same reason the map is one merged map per site.
+    """
 
     def __init__(
         self,
@@ -192,25 +214,83 @@ class CairnTools:
         headless: bool = True,
         downloads: str | None = None,
         profile: str | None = None,
+        profiles_dir: str | None = None,
         agent: str | None = None,
     ):
         self.store = CairnStore(db_path=db_path, agent=agent)
+        # What `default` means on this machine: whatever was already in use, so naming
+        # profiles never moves an existing sign-in.
         self.profile = profile if profile is not None else str(DEFAULT_PROFILE)
+        self.profiles_dir = Path(profiles_dir) if profiles_dir else DEFAULT_PROFILES_DIR
+        self.active = DEFAULT_PROFILE_NAME
         self.downloads = downloads
         self.headless = headless
-        self.worker = BrowserWorker(headless=headless, downloads=downloads, profile=self.profile)
-        self._session: Session | None = None
+        self._workers: dict[str, BrowserWorker] = {}
+        self._sessions: dict[str, Session] = {}
         self._login_worker: BrowserWorker | None = None
 
+    def path_for(self, name: str) -> str:
+        """The browser folder one profile uses."""
+        where = profile_named(name, default=self.profile, root=self.profiles_dir)
+        return str(where) if where else ""
+
+    @property
+    def worker(self) -> BrowserWorker:
+        """The browser for the profile in use, started the first time it is needed.
+
+        A property rather than a field so that every existing caller keeps working: they
+        ask for `tools.worker` and get whichever profile is active, without knowing that
+        profiles exist at all.
+        """
+        running = self._workers.get(self.active)
+        if running is None:
+            running = BrowserWorker(
+                headless=self.headless,
+                downloads=self.downloads,
+                profile=self.path_for(self.active),
+            )
+            self._workers[self.active] = running
+        return running
+
     def session(self) -> Session:
-        """The cold-path session, started the first time it is needed."""
-        if self._session is None:
+        """The cold-path session for the profile in use, started when first needed.
+
+        One per profile, because a trace belongs to the browser that made it. Sharing one
+        would mix an admin's steps into a customer's trail.
+        """
+        existing = self._sessions.get(self.active)
+        if existing is None:
             self.worker.start()
-            self._session = Session(self.worker.browser, self.store)  # type: ignore[arg-type]
-        return self._session
+            existing = Session(self.worker.browser, self.store)  # type: ignore[arg-type]
+            self._sessions[self.active] = existing
+        return existing
 
     def reset_session(self) -> None:
-        self._session = None
+        self._sessions.pop(self.active, None)
+
+    def use(self, name: str) -> str:
+        """Work as a different profile from now on. Made on first use.
+
+        Switching costs nothing: the browser it belongs to stays open and signed in, so
+        going back and forth between roles is free.
+        """
+        self.active = name.strip() or DEFAULT_PROFILE_NAME
+        return self.active
+
+    def known_profiles(self) -> list[dict[str, Any]]:
+        """Every profile this machine has, and whether its browser is up."""
+        names = {DEFAULT_PROFILE_NAME, self.active} | set(self._workers)
+        if self.profiles_dir.exists():
+            names |= {folder.name for folder in self.profiles_dir.iterdir() if folder.is_dir()}
+        return [
+            {
+                "name": name,
+                "active": name == self.active,
+                "open": name in self._workers and self._workers[name].running,
+                "signed_in_data": bool(self.path_for(name)) and Path(self.path_for(name)).exists(),
+            }
+            for name in sorted(names)
+        ]
 
     def take_profile_note(self) -> str | None:
         """Hand over the one-time note about a browser swap, and clear it.
@@ -232,10 +312,12 @@ class CairnTools:
         Chrome allows one process per profile, so the working browser has to let go of it
         first. It starts again by itself on the next call.
         """
+        # Only the profile being signed into lets go. The others stay open and signed in,
+        # which is the whole point of having them.
         self.worker.stop()
-        self._session = None
+        self._sessions.pop(self.active, None)
         self._login_worker = BrowserWorker(
-            headless=False, downloads=self.downloads, profile=self.profile
+            headless=False, downloads=self.downloads, profile=self.path_for(self.active)
         )
         self._login_worker.start()
         self._login_worker.submit(lambda browser: browser.goto(url))
@@ -257,8 +339,10 @@ class CairnTools:
         if self._login_worker is not None:
             self._login_worker.stop()
             self._login_worker = None
-        self.worker.stop()
-        self._session = None
+        for running in self._workers.values():
+            running.stop()
+        self._workers.clear()
+        self._sessions.clear()
 
 
 def build_server(
@@ -267,11 +351,13 @@ def build_server(
     headless: bool = True,
     downloads: str | None = None,
     profile: str | None = None,
+    profiles_dir: str | None = None,
     agent: str | None = None,
 ) -> FastMCP:
     """Wire the tools. Kept in a function so tests can build a server without running it."""
     tools = CairnTools(
         db_path=db_path,
+        profiles_dir=profiles_dir,
         headless=headless,
         downloads=downloads,
         profile=profile,
@@ -1012,6 +1098,56 @@ def build_server(
         }
 
     @server.tool()
+    def cairn_profile(name: str | None = None) -> dict[str, Any]:
+        """Work as a different signed-in identity. Call with no name to see them all.
+
+        A profile is a WHOLE SIGNED-IN BROWSER — its own cookies, its own session, its own
+        window. Cairn keeps them side by side, so a customer, a vendor and an admin can all
+        be signed in at the same time and you switch between them instantly.
+
+        USE ONE PROFILE PER ROLE when a site has more than one kind of user. Without that
+        you have to sign out and back in between roles, which is slow and, worse, makes the
+        ORDER of your work matter — anything that forgets to sign out breaks whatever runs
+        next.
+
+        A profile is made the first time you name it, empty and signed in to nothing. Sign
+        it in ONCE with cairn_login and it stays that way.
+
+        Everything after this call — cairn_run, cairn_act, cairn_read, cairn_login — uses
+        the profile you switched to, until you switch again.
+
+        Memory is NOT split by profile, on purpose. The site is one site however many
+        logins reach it, so what one role learned is there for the next.
+
+        Args:
+            name: What to call it — "vendor", "admin", "customer". Leave it out to list
+                the profiles this machine has and say which one is in use.
+        """
+        if name is None:
+            return {
+                "ok": True,
+                "active": tools.active,
+                "profiles": tools.known_profiles(),
+                "next": (
+                    "Call cairn_profile with a `name` to switch. A name Cairn has not seen "
+                    "before is made on the spot, signed in to nothing."
+                ),
+            }
+
+        was = tools.active
+        now = tools.use(name)
+        return {
+            "ok": True,
+            "active": now,
+            "was": was,
+            "profiles": tools.known_profiles(),
+            "next": (
+                f"Everything from here on happens as {now!r}. If this profile is not signed "
+                f"in to the site yet, call cairn_login — once is enough, it stays signed in."
+            ),
+        }
+
+    @server.tool()
     def cairn_login(site: str) -> dict[str, Any]:
         """Open a real browser window so the USER can sign in to a site themselves.
 
@@ -1022,8 +1158,12 @@ def build_server(
         A visible Chrome window opens on that site. Tell the user to sign in there, in
         their own time. When they say they are done, call cairn_login_done.
 
-        Cairn keeps one browser profile, so after this the user stays signed in to this
-        site — and every other site they have signed in to — until it expires.
+        This signs in the profile you are CURRENTLY using, and that profile only. Once
+        signed in it stays signed in, so this is a once-per-site, once-per-profile job.
+
+        If a site has several kinds of user — a customer, a vendor, an admin — switch with
+        cairn_profile FIRST and sign each one in separately. They then stay signed in side
+        by side, and you move between them without signing out of anything.
 
         Args:
             site: The site to open, as a full URL where possible.
@@ -1042,6 +1182,7 @@ def build_server(
             "ok": True,
             "site": domain_of(target),
             "opened": target,
+            "profile": tools.active,
             "next": (
                 "A browser window is now open. Tell the user: sign in there however the "
                 "site asks — password, Google, a code on your phone — and say when you are "
@@ -1207,17 +1348,22 @@ def run_stdio() -> None:
     entry has — this function takes no arguments and nothing calls it with any.
 
         CAIRN_AGENT    who this agent is. Unset means the memory that already exists.
-        CAIRN_PROFILE  which browser profile to use. Two agents CANNOT share one: Chrome
-                       allows a single process per profile, and a shared profile would also
-                       mean the second agent is already signed in to everything the first
-                       one is — which is not what "an agent that has never seen this site"
-                       should mean.
+        CAIRN_PROFILE  where the DEFAULT profile keeps its browser data. Two agents cannot
+                       share one: Chrome allows a single process per profile, and a shared
+                       profile would also mean the second agent is already signed in to
+                       everything the first one is — which is not what "an agent that has
+                       never seen this site" should mean.
+                       Inside ONE agent, extra profiles are made by name with
+                       cairn_profile, and all of them stay signed in at once.
+        CAIRN_PROFILES_DIR  where those named profiles live. Rarely set; the default is
+                       ~/.cairn/profiles.
         CAIRN_DB       which memory database. Agents share this on purpose; it is how a
                        trail gets from one to the other.
     """
     server = build_server(
         agent=os.environ.get("CAIRN_AGENT") or None,
         profile=os.environ.get("CAIRN_PROFILE") or None,
+        profiles_dir=os.environ.get("CAIRN_PROFILES_DIR") or None,
         db_path=os.environ.get("CAIRN_DB") or None,
     )
     who = os.environ.get("CAIRN_AGENT") or "the default agent"

@@ -729,3 +729,41 @@ split out of Phase 5 because it needs no blockchain and no Discord answer.
   index had the MCP package at 0.2.1 while still offering the engine at 0.2.0, so a fresh
   install in that window paired 0.2.1 with 0.2.0. Correct — the floor allows it — just
   without the tab fix. It settles on its own; `--no-cache-dir` forces the point.
+
+- **2026-09-05 (more than one signed-in identity at once)** — Rohit hit the limit on his own
+  marketplace: "one browser profile, so customer/vendor/admin can't be signed in at once — the
+  suite is sequential with logout/login between roles. It rules out parallelism and means test
+  order matters."
+
+  Both halves of that were true, and the second is the worse one. Signing out and back in
+  between roles is slow; a test that FORGETS to sign out breaks whatever runs next, so the
+  order of a suite silently becomes part of its meaning.
+
+  **A profile is now a whole browser, and Cairn keeps as many as are named.** Its own cookies,
+  its own session, its own Chrome process. `cairn_profile("vendor")` switches; a name Cairn
+  has not seen is made on the spot, empty. `cairn_profile()` lists them and says which is in
+  use. `cairn login` and `cairn run` take `--profile` from the terminal.
+
+  The change inside `CairnTools` is small on purpose: `worker` became a PROPERTY returning the
+  active profile's worker, and `session()` returns the active profile's session. All ten
+  existing call sites carried on unchanged — they ask for `tools.worker` and get whichever
+  profile is current, without knowing profiles exist.
+
+  Sessions are per profile too. A trace belongs to the browser that made it; sharing one would
+  mix an admin's steps into a customer's trail.
+
+  **`default` keeps the original folder.** Named profiles live in `~/.cairn/profiles/<name>`,
+  but `default` still answers with `~/.cairn/browser-profile`, so nothing anybody has already
+  signed into moves or is lost.
+
+  **Memory is deliberately NOT split by profile.** One site is one site however many logins
+  reach it, so what one role learned is there for the next — the same reasoning as the merged
+  map, and it is what makes three roles cheaper rather than three times the work.
+
+  `cairn_login` now says which profile it is signing in, and its description tells the host AI
+  to switch profile FIRST when a site has several kinds of user. `cairn doctor` lists the named
+  profiles it finds.
+
+  10 new tests, and they test the claim rather than the plumbing: two profiles are two browsers
+  RUNNING AT THE SAME TIME, each keeping its own page and its own trace, while the map they
+  both write to stays shared. 122 MCP tests, ruff clean.

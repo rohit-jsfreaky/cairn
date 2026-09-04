@@ -32,9 +32,17 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from urllib.parse import urlparse
 
-from .browser import DEFAULT_PROFILE, Browser, NoDisplay, ProfileUnavailable, domain_of
+from .browser import (
+    DEFAULT_PROFILE_NAME,
+    Browser,
+    NoDisplay,
+    ProfileUnavailable,
+    domain_of,
+    profile_named,
+)
 from .doctor import cmd_doctor
 from .events import Emitter, Event
 from .executor import Executor, NoTrailError
@@ -111,6 +119,16 @@ def _store(args: argparse.Namespace) -> CairnStore:
     return store
 
 
+def _profile_path(args: argparse.Namespace) -> Path | None:
+    """Which browser folder this command should use.
+
+    `default` answers with the original folder, so naming profiles never moves an existing
+    sign-in somewhere new.
+    """
+    chosen = profile_named(getattr(args, "profile", DEFAULT_PROFILE_NAME))
+    return Path(chosen) if chosen else None
+
+
 def _site_key(value: str) -> str:
     """Accept either a domain or a full URL, so nobody has to think about which."""
     return domain_of(value) if urlparse(value).scheme else value
@@ -127,7 +145,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     emitter.subscribe(render)
     store = _store(args)
 
-    browser = Browser(headless=not args.headed, profile=DEFAULT_PROFILE)
+    browser = Browser(headless=not args.headed, profile=_profile_path(args))
     try:
         browser.start()
         result = Executor(store, browser, emitter=emitter).run(
@@ -185,7 +203,7 @@ def cmd_login(args: argparse.Namespace) -> int:
     print(f"  opening {target}")
     print("  sign in however the site asks — password, Google, a code on your phone.")
 
-    browser = Browser(headless=False, profile=DEFAULT_PROFILE)
+    browser = Browser(headless=False, profile=_profile_path(args))
     try:
         try:
             browser.start()
@@ -509,6 +527,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="A browser memory for AI agents. Learn a site once, replay it for free.",
     )
     parser.add_argument("--db", default=None, help="memory database (default: Sibyl's own)")
+    parser.add_argument(
+        "--profile",
+        default=DEFAULT_PROFILE_NAME,
+        help="which signed-in browser to use. A profile is a whole browser of its own, so "
+        "a vendor and an admin can both stay signed in. Made on first use",
+    )
     parser.add_argument(
         "--agent",
         default=None,

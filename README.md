@@ -363,8 +363,7 @@ is what makes it yours to forget.
 
 ## Signing in
 
-Cairn keeps **one browser profile**, so you sign in to a site once — by hand, in a real window
-you can see:
+You sign in to a site once, by hand, in a real window you can see:
 
 ```bash
 cairn login --site posthog.com
@@ -380,6 +379,36 @@ goes here; the value is looked up at replay time from an environment variable or
 Being signed in is not the same as remembering. Delete the memory and Cairn is still signed
 in, and still has no idea what to click.
 
+### More than one identity at once
+
+A profile is a whole signed-in browser — its own cookies, its own session, its own window.
+Cairn keeps as many as you name, side by side:
+
+```bash
+cairn --profile vendor   login --site shop.example.com
+cairn --profile customer login --site shop.example.com
+cairn --profile admin    login --site shop.example.com
+```
+
+From your AI, switch with one call:
+
+```
+cairn_profile("vendor")     # everything after this happens as the vendor
+cairn_profile()             # which profiles exist, and which is in use
+```
+
+This matters most for end-to-end testing. With a single profile a suite covering three roles
+has to sign out and back in between them — slow, and worse, it makes the **order** of the
+tests matter: anything that forgets to sign out breaks whatever runs next. With a profile per
+role all three stay signed in and switching is free.
+
+**Memory is not split by profile, on purpose.** The site is one site however many logins reach
+it, so what the admin learned is there when the customer arrives — the same reason the map is
+one merged map per site.
+
+`default` keeps the folder Cairn always used, so naming profiles never moves an existing
+sign-in.
+
 ## What it can do
 
 Cairn is Playwright underneath, exposed as two tools rather than thirty-five, because tool
@@ -389,6 +418,9 @@ choice is the most fragile part of an agent's day.
 type, clear, press, check, uncheck, set_checked, select, upload, scroll_to, drag, focus, blur,
 tap, select_text, dispatch_event, goto, back, forward, reload, scroll, wait_for, new_tab,
 switch_tab, dismiss_when_seen, set_time, screenshot, evaluate, and more.
+
+**`cairn_profile(name?)`** — switch signed-in identity, or list them. Each is a separate
+browser, so several roles stay signed in at once.
 
 **`cairn_map(site, path?)`** — what Cairn already saw on a site: the pages, then the controls
 on any one of them. Read from memory, so it costs no page load.

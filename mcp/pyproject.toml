@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cairn-browser-mcp"
-version = "0.2.1"
+version = "0.3.0"
 description = "Cairn as MCP tools: a browser with a memory, for Claude Code, Cursor and Codex."
 requires-python = ">=3.11"
 license = "MIT"
@@ -21,10 +21,13 @@ classifiers = [
 ]
 authors = [{ name = "Rohit Kashyap" }]
 dependencies = [
-    # A FLOOR, not decoration. `cairn_map` calls `store.load_site_map`, which does not
-    # exist in cairn-browser 0.1.0 — without this, pip is free to pair a new server with
-    # an old engine and the tool raises AttributeError on a user's first call.
-    "cairn-browser>=0.2.0",
+    # A FLOOR, not decoration, and it has to move every time this server starts using
+    # something new in the engine. 0.2.0 for `store.load_site_map` behind `cairn_map`;
+    # 0.3.0 because this file now imports `profile_named`, `DEFAULT_PROFILE_NAME` and
+    # `DEFAULT_PROFILES_DIR`, which do not exist before it. Left at 0.2.0, pip is free to
+    # pair this server with an older engine and the import fails outright — the server
+    # never starts at all, which is the worst shape of failure there is.
+    "cairn-browser>=0.3.0",
     # Capped at <2 deliberately, and it is not cosmetic. In mcp 2.x `FastMCP` was renamed
     # to `MCPServer` and other APIs changed with it, so `from mcp.server.fastmcp import
     # FastMCP` raises ModuleNotFoundError on import and the server never starts.
