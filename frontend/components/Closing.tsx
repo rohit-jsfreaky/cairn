@@ -48,18 +48,31 @@ export function Closing() {
             <CopyCommand />
           </div>
 
-          <p className="mx-auto mt-6 max-w-[540px] text-[15px] leading-[1.5] text-ink/50">
-            Then three lines in the{" "}
+          <p className="mx-auto mt-6 max-w-[560px] text-[15px] leading-[1.6] text-ink/50">
+            Then <Command>playwright install chromium</Command> for the browser, and{" "}
+            <Command>claude mcp add cairn -- cairn-mcp</Command> in the folder you work in.{" "}
+            {/* Kept on one line: "No API key, no account" broke across a line break at the
+                default desktop width, which is the width a judge will see. */}
+            <span className="whitespace-nowrap">No API key, no account.</span> The{" "}
             <a
               href="https://github.com/rohit-jsfreaky/cairn#install"
               className="underline decoration-ink/25 underline-offset-4 transition-colors hover:text-ink/75"
             >
               README
-            </a>
-            . Nothing is on PyPI yet, so Cairn installs from the clone.
+            </a>{" "}
+            has the same lines for Cursor and Codex.
           </p>
         </Container>
       </section>
     </div>
+  );
+}
+
+/** A command inside a sentence: readable at 15px without shouting. */
+function Command({ children }: { children: string }) {
+  return (
+    <code className="rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-mono text-[13.5px] whitespace-nowrap text-ink/70">
+      {children}
+    </code>
   );
 }

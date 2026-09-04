@@ -2,6 +2,7 @@ import { CairnMark } from "./CairnMark";
 import { Container } from "./Container";
 
 const REPO = "https://github.com/rohit-jsfreaky/cairn";
+const PYPI = "https://pypi.org/project/cairn-browser-mcp/";
 
 /**
  * The Project column pointed at `#install` while the repository did not exist yet. It does
@@ -30,6 +31,7 @@ const COLUMNS = [
     title: "Project",
     links: [
       { href: REPO, label: "GitHub" },
+      { href: PYPI, label: "PyPI" },
       { href: `${REPO}#prior-work`, label: "Prior work" },
       { href: `${REPO}/blob/main/LICENSE`, label: "License" },
     ],

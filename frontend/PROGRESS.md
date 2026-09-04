@@ -133,3 +133,23 @@ Dashboard (Phase 4) — still blocked on `backend/`. Do not start it early.
   It says **Base Sepolia**, not "Base", on purpose: that is what actually runs, and the
   rules disqualify fabricated evidence. Footer gained a "Sharing and selling" link to it.
   `next build` clean.
+
+- **2026-09-04 (the landing page tells the truth about installing)** — both packages went up
+  on PyPI on Sep 3, so the page's install story was a day out of date and understated the
+  product: it still told visitors to clone the repository.
+
+  `CopyCommand` now hands over `pip install cairn-browser-mcp` instead of `git clone …`. That
+  button had deliberately carried the long clone command for weeks, because a copy button that
+  gives somebody a failing command is worse than a longer honest one — `uvx cairn-mcp` would
+  have fetched nothing. The short version is finally the true one.
+
+  The line under it names the two remaining steps in the same words the README uses:
+  `playwright install chromium` for the browser, then `claude mcp add cairn -- cairn-mcp` in
+  the folder you work in. "No API key, no account" is held on one line with `whitespace-nowrap`
+  — it broke across a line break at the default desktop width, which is the width a judge sees.
+
+  Added a **PyPI** link to the footer's Project column, next to GitHub.
+
+  Checked on a real build (`next build` + `next start`), not in dev: reads as three tidy lines
+  at desktop width, and at 390px there is no horizontal overflow (`scrollWidth === clientWidth
+  === 375`). Typecheck clean.

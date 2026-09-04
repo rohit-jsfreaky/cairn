@@ -5,11 +5,12 @@ import { useState } from "react";
 /**
  * The command a visitor can actually run today.
  *
- * It used to read `claude mcp add cairn -- uvx cairn-mcp`, which was shorter and did not
- * work: nothing is published to PyPI, so there is no `cairn-mcp` for uvx to fetch. A copy
- * button that hands somebody a failing command is worse than a longer honest one.
+ * For most of this project's life it read `git clone …`, because nothing was published and a
+ * copy button that hands somebody a failing command is worse than a longer honest one. Both
+ * packages went up on PyPI on 2026-09-03, so the short version is finally the true one and
+ * nobody needs the repository to use Cairn.
  */
-const INSTALL = "git clone https://github.com/rohit-jsfreaky/cairn";
+const INSTALL = "pip install cairn-browser-mcp";
 
 export function CopyCommand() {
   const [copied, setCopied] = useState(false);
