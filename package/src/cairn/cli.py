@@ -33,7 +33,7 @@ import json
 import sys
 from urllib.parse import urlparse
 
-from .browser import DEFAULT_PROFILE, Browser, domain_of
+from .browser import DEFAULT_PROFILE, Browser, NoDisplay, ProfileUnavailable, domain_of
 from .events import Emitter, Event
 from .executor import Executor, NoTrailError
 from .store import CairnStore, TrailAlreadyHere, best_match, slug
@@ -139,6 +139,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     for saved in result.saved_files:
         print(f"  {TICK} saved  {saved}")
 
+    if result.blocked:
+        print()
+        print(f"  {CROSS} {result.reason}")
+        print()
+        return 4
+
     if result.needs_login:
         print()
         print(f"  {CROSS} {result.reason}")
@@ -178,7 +184,13 @@ def cmd_login(args: argparse.Namespace) -> int:
 
     browser = Browser(headless=False, profile=DEFAULT_PROFILE)
     try:
-        browser.start()
+        try:
+            browser.start()
+        except (NoDisplay, ProfileUnavailable) as cannot:
+            # A raw Playwright traceback about an X server tells a person on a server
+            # nothing they can act on. These two both end in a sentence that does.
+            print(f"\n  {CROSS} {cannot}\n")
+            return 2
         browser.goto(target)
         print()
         input("  press Enter here once you are signed in... ")

@@ -1,5 +1,7 @@
 # Cairn — a browser memory for AI agents
 
+[![tests](https://github.com/rohit-jsfreaky/cairn/actions/workflows/test.yml/badge.svg)](https://github.com/rohit-jsfreaky/cairn/actions/workflows/test.yml)
+
 **Your AI can use websites. But it forgets how, every single time. Cairn makes it remember.**
 
 Cairn gives Claude Code, Cursor, Codex or any MCP client a browser that remembers. Your AI

@@ -38,7 +38,7 @@ from playwright.sync_api import Page, sync_playwright
 from . import snapshot as aria
 from .models import Locator
 from .snapshot import Element, Snapshot
-from .waits import DEFAULT_WAIT_MS, LOCATOR_WAIT_MS
+from .waits import DEFAULT_WAIT_MS, LOCATOR_WAIT_MS, QUIET_WAIT_MS
 
 # Nothing is granted unless a caller asks for it. A site that wants notifications or
 # your location puts a prompt over the page, and a prompt over the page blocks the run.
@@ -70,6 +70,25 @@ PROFILE_OWNER = ".cairn-browser"
 # Playwright says this, and only this, when the browser is not installed. Every other
 # failure is a different problem and must not be mistaken for it.
 NOT_INSTALLED = "is not found"
+
+# What a machine with no screen says when asked for a visible window. A server reached
+# over SSH is the ordinary case here, not an exotic one, and the raw Playwright error
+# tells a person nothing about what to do instead.
+NO_SCREEN_TELLS = ("xserver", "missing x server", "$display")
+
+# How a captcha announces itself. Matched against the page, not guessed at from a failure:
+# a step that fails because a human check appeared is not drift, and asking an AI to
+# repair its way past one wastes a run and teaches the trail nonsense.
+CAPTCHA_MARKERS = (
+    "iframe[src*='recaptcha']",
+    "iframe[src*='hcaptcha']",
+    "iframe[src*='challenges.cloudflare.com']",
+    "iframe[title*='captcha' i]",
+    ".g-recaptcha",
+    ".h-captcha",
+    ".cf-turnstile",
+    "#challenge-running",
+)
 
 # Stops the browser advertising that a program is driving it. Without these,
 # `navigator.webdriver` is true and Google refuses to let the USER sign in by hand, which
@@ -244,6 +263,26 @@ class ProfileUnavailable(RuntimeError):
     """No browser would open Cairn's profile, and the reason is not knowable from here."""
 
 
+class NoDisplay(RuntimeError):
+    """A visible window was asked for on a machine that has no screen."""
+
+
+def _is_missing_display(problem: BaseException) -> bool:
+    """Is this "there is nowhere to draw a window", rather than a browser problem?"""
+    said = str(problem).lower()
+    return any(tell in said for tell in NO_SCREEN_TELLS)
+
+
+NO_SCREEN_ADVICE = (
+    "Cairn cannot open a window here: this machine has no screen. Signing in happens in a "
+    "window a person looks at and types into, so it is not something Cairn can do for you "
+    "on a headless server.\n"
+    "    Either run `cairn login` on a computer with a desktop and copy the folder "
+    "~/.cairn/browser-profile across afterwards,\n"
+    "    or forward a display over SSH with `ssh -X` and run it again."
+)
+
+
 def _browser_name(channel: str | None) -> str:
     """What to call a browser in a message meant for a person."""
     return "Chrome" if channel == REAL_CHROME else "the bundled Chromium"
@@ -263,6 +302,11 @@ def _why_refused(profile: Path, problem: BaseException, *, bundled_failure: Base
     delete it. Only the BUNDLED attempt is checked: a machine can perfectly well have no
     real Chrome while Chromium works fine, and that is not this problem.
     """
+    if _is_missing_display(problem) or _is_missing_display(bundled_failure):
+        # Nothing to do with the profile at all. Said first, because the profile advice
+        # below would send somebody deleting their sign-ins over a missing screen.
+        return NO_SCREEN_ADVICE
+
     if _is_missing_browser(bundled_failure):
         return (
             "Cairn has no browser to drive yet. Chromium is a separate download from the "
@@ -419,6 +463,8 @@ class Browser:
         try:
             return self._playwright.chromium.launch(**self._launch_options())
         except PlaywrightError as refused:
+            if _is_missing_display(refused):
+                raise NoDisplay(NO_SCREEN_ADVICE) from refused
             if not _is_missing_browser(refused):
                 raise
             self._channel = None
@@ -896,6 +942,36 @@ class Browser:
         with suppress(PlaywrightError):
             self.page.wait_for_load_state("domcontentloaded")
         self.flush_downloads()
+
+    def wait_until_quiet(self, timeout_ms: int = QUIET_WAIT_MS) -> None:
+        """Wait for the page to stop working, not merely to have arrived.
+
+        `settle()` waits for `domcontentloaded`, which fires long before a JavaScript app
+        has drawn anything. That is enough after an action, but not when deciding whether
+        a control is genuinely gone or the page simply has not rendered it yet — and
+        getting that wrong marks good locators dead and invites a pointless repair.
+
+        Bounded and suppressed on purpose: a page that polls forever never goes quiet,
+        and waiting is only ever an improvement here, never a requirement.
+        """
+        with suppress(PlaywrightError):
+            self.page.wait_for_load_state("networkidle", timeout=timeout_ms)
+
+    def captcha_on_page(self) -> str | None:
+        """The name of the human check standing in the way, if there is one.
+
+        Only ever asked after a step has already failed. "Prove you are human" is not
+        drift and cannot be repaired: the honest answer is to say what happened and stop,
+        rather than hand an AI a page it has no way through.
+        """
+        for marker in CAPTCHA_MARKERS:
+            try:
+                if self.page.locator(marker).count() > 0:
+                    return marker
+            except PlaywrightError:
+                # A closed or navigating page cannot be asked. That is not a captcha.
+                return None
+        return None
 
     def looks_signed_out(self) -> bool:
         """Does this look like we were bounced back to a sign-in page?

@@ -864,3 +864,37 @@ is the biggest remaining gap between "demo" and "product".
 
   The lesson worth keeping: **WSL is not a CI runner.** It has a display, twelve cores and
   a warm HOME. Two clean local runs proved nothing about a bare machine.
+
+- **2026-09-04 (the three edge cases a real user actually hits)** — found by walking through
+  a fresh install rather than the test suite. None of them exotic.
+
+  1. **`cairn login` on a machine with no screen** — a server over SSH is the ordinary case,
+     and it ended in a raw Playwright X server error. Now a `NoDisplay` error carrying a
+     sentence a person can act on: run it on a desktop and copy `~/.cairn/browser-profile`
+     across, or forward a display with `ssh -X`. Reported the same way in the CLI and the
+     MCP tool, and `_why_refused` says it FIRST — otherwise the profile advice would have
+     sent somebody deleting their sign-ins over a missing monitor.
+  2. **A captcha was reported as a broken step.** `browser.captcha_on_page()` looks for the
+     usual markers (reCAPTCHA, hCaptcha, Turnstile) and replay now returns `blocked=True`
+     with an explanation instead of a repair request. Deliberately NOT `needs_repair`:
+     there is nothing to repair, no AI can get past a human check, and calling it drift
+     marked good locators dead for a page the trail never reached. The MCP tool tells the
+     host AI to stop rather than try.
+  3. **A slow site was quietly recorded as drift — the dangerous one.** It threw no error.
+     Every locator missed because the page had not finished drawing, each miss was written
+     down, health fell, and a "repair" would replace working locators with identical ones.
+     `_replay_step` now makes ONE pass collecting misses without recording them; if nothing
+     resolved at all it waits for the page to go quiet (`networkidle`, bounded at 5s) and
+     looks once more. Only the pass that actually decides the step's fate is allowed to
+     blame anything. The retry happens only when NOTHING resolved — if something resolved
+     and the action or check failed, that is real, and repeating it could click twice.
+     `settle()` was never enough here: it waits for `domcontentloaded`, which fires long
+     before a JavaScript app has drawn anything.
+
+  Five tests cover these, including one where a button appears after 2.2 seconds and the
+  assertion is that its locator records **zero** misses.
+
+  **Also: how the tests get run has changed.** Running the full Windows suite and a WSL suite
+  at the same time was cooking Rohit's laptop. From here: one process at a time, targeted
+  files locally, and the full 600-test sweep belongs to CI, which runs it on GitHub's
+  machines on two Python versions for free.

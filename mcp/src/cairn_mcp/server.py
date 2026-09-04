@@ -24,7 +24,7 @@ import sys
 from typing import Any
 
 from cairn import actions, reads
-from cairn.browser import DEFAULT_PROFILE, domain_of
+from cairn.browser import DEFAULT_PROFILE, NoDisplay, ProfileUnavailable, domain_of
 from cairn.executor import Executor, NeedsTask, NoTrailError
 from cairn.models import Locator, SiteKnowledge
 from cairn.operations import ActionFailed, Session
@@ -386,6 +386,21 @@ def build_server(
             }
         except Exception as failure:  # noqa: BLE001 - reported, not raised at the client
             return err(failure)
+
+        if result.blocked:
+            return {
+                "ok": False,
+                "known": True,
+                "blocked": True,
+                "site": key,
+                "message": result.reason,
+                "next": (
+                    "STOP. Do not call cairn_repair and do not explore. A captcha is a "
+                    "human check and there is nothing here you can do about it — the trail "
+                    "is fine and nothing was marked broken. Tell the user to open the site "
+                    "themselves, clear the check, and say when to try again."
+                ),
+            }
 
         if result.needs_login:
             return {
@@ -871,6 +886,10 @@ def build_server(
         target = site if "://" in site else f"https://{site}"
         try:
             tools.open_login_window(target)
+        except (NoDisplay, ProfileUnavailable) as cannot:
+            # Both of these end in a sentence naming what to do. A raw Playwright error
+            # about an X server tells a host AI nothing it can act on or relay.
+            return err(cannot)
         except Exception as failure:  # noqa: BLE001
             return err(failure)
 

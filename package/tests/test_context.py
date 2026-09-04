@@ -485,3 +485,106 @@ class TestAFailedStartLeavesNothingBehind:
 
         with pytest.raises(PlaywrightError, match="XServer"):
             broken.start()
+
+
+class TestTheThreeThingsAUserActuallyHits:
+    """Edge cases found by walking through a real install rather than the test suite.
+
+    None of these is exotic: a server with no screen, a site that shows a captcha, and a
+    site that is merely slow. The third is the dangerous one — it fails quietly.
+    """
+
+    def test_a_machine_with_no_screen_is_told_what_to_do_instead(self, tmp_path) -> None:
+        """`cairn login` over SSH used to end in a raw Playwright X server error."""
+        from playwright.sync_api import Error as PlaywrightError
+
+        from cairn.browser import NoDisplay
+
+        class NoScreen:
+            def launch(self, **options):
+                raise PlaywrightError(
+                    "Looks like you launched a headed browser without having a XServer "
+                    "running.\nMissing X server or $DISPLAY"
+                )
+
+        visible = Browser(headless=False, downloads=tmp_path / "d")
+        visible._playwright = type("PW", (), {"chromium": NoScreen()})()
+        visible._channel = "chrome"
+        visible._headless = False
+
+        with pytest.raises(NoDisplay) as raised:
+            visible._launch()
+
+        said = str(raised.value)
+        assert "no screen" in said
+        assert "ssh -X" in said
+        assert "browser-profile" in said, "it should say how to move a signed-in profile"
+
+    def test_and_a_profile_open_is_not_blamed_for_it(self, tmp_path) -> None:
+        """The profile advice would send somebody deleting sign-ins over a missing screen."""
+        from playwright.sync_api import Error as PlaywrightError
+
+        from cairn.browser import _why_refused
+
+        no_screen = PlaywrightError("Missing X server or $DISPLAY")
+
+        said = _why_refused(tmp_path, no_screen, bundled_failure=no_screen)
+
+        assert "no screen" in said
+        assert "already open" not in said
+        assert "delet" not in said.lower()
+
+    def test_a_captcha_is_spotted_rather_than_guessed_at(self, browser: Browser) -> None:
+        """A human check is not drift, and no amount of repairing gets past one."""
+        browser.page.set_content(
+            "<h1>Are you a robot?</h1>"
+            "<iframe src='https://www.google.com/recaptcha/api2/anchor'></iframe>"
+        )
+
+        assert browser.captcha_on_page() is not None
+
+    def test_an_ordinary_page_is_not_mistaken_for_one(self, browser: Browser) -> None:
+        browser.page.set_content("<h1>Invoices</h1><button id='download'>Download</button>")
+
+        assert browser.captcha_on_page() is None
+
+    def test_a_slow_page_is_looked_at_twice_before_being_called_drift(
+        self, browser: Browser, tmp_path
+    ) -> None:
+        """THE DANGEROUS ONE. A slow site used to be recorded as drift, which quietly
+        drags good locators toward dead and invites a repair that changes nothing.
+
+        The button here does not exist when the step first looks, and appears shortly
+        after — exactly what a JavaScript app does.
+        """
+        from cairn.executor import Executor
+        from cairn.models import Locator, Postcondition, Step
+        from cairn.store import CairnStore
+
+        browser.page.set_content(
+            """<h1>slow</h1>
+            <script>
+              setTimeout(() => {
+                const b = document.createElement('button');
+                b.id = 'late'; b.textContent = 'Late';
+                document.body.appendChild(b);
+              }, 2200);
+            </script>"""
+        )
+
+        step = Step(
+            index=1,
+            intent="click the late button",
+            action="click",
+            postcondition=Postcondition("element_present", "#late"),
+            locators=[Locator("css", "#late", hits=5)],
+        )
+        store = CairnStore(db_path=str(tmp_path / "slow-memory.db"))
+        executor = Executor(store, browser)
+        executor._domain = "slow.example.com"
+        executor.answers = {}
+
+        outcome = executor._replay_step(step, start_url=None)
+
+        assert outcome.matched_by is not None, "the second look should have found it"
+        assert step.locators[0].misses == 0, "a slow page must not be recorded as a miss"

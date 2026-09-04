@@ -113,6 +113,11 @@ class ReplayResult:
     """We were bounced to a sign-in page. Nothing is wrong with the trail; the session
     simply ran out and a person has to sign in again."""
 
+    blocked: bool = False
+    """A human check — a captcha — stood in the way. Deliberately NOT `needs_repair`:
+    there is nothing to repair, and nothing an AI can do about it either. Reporting it as
+    drift would mark good locators dead for a page the trail never actually reached."""
+
     site_facts: list[str] = field(default_factory=list)
     """What is still known about the site after a stale trail is thrown away. This is why
     relearning is cheaper than a first visit."""
@@ -220,6 +225,25 @@ class Executor:
                     url=request.url,
                 )
             )
+            # A human check looks exactly like a broken step too, and it is the one thing
+            # neither Cairn nor a host AI can repair its way past. Say what happened and
+            # stop, rather than handing back a page with no way through it.
+            standing_in_the_way = self.browser.captcha_on_page()
+            if standing_in_the_way is not None:
+                self._finish(playbook, metrics, started, succeeded=False)
+                return ReplayResult(
+                    ok=False,
+                    metrics=metrics,
+                    blocked=True,
+                    reason=(
+                        f"{playbook.domain} put a human check in the way, so the run "
+                        f"stopped. The trail is not broken and nothing was repaired — "
+                        f"a captcha cannot be automated past. Open the site yourself, "
+                        f"clear the check, and run again."
+                    ),
+                    saved_files=list(self.browser.saved_files),
+                )
+
             # Being signed out looks exactly like a broken step, and asking an AI to
             # repair its way past a login page would waste a run and teach it nonsense.
             if self.browser.looks_signed_out():
@@ -318,16 +342,58 @@ class Executor:
         self.browser.dialog_policy = step.dialog_choice or ACCEPT
         self.browser.last_dialog = None
 
+        settled, found_anything, missed = self._try_locators(step, outcome, began=began)
+        if settled is not None:
+            self._blame(missed, step)
+            return settled
+
+        # Nothing on the page matched. Before calling that drift, take the other
+        # explanation seriously: the page may simply not have finished drawing. A slow
+        # site marked as drift is the worst outcome there is — it costs no error, quietly
+        # drags good locators toward dead, and invites a "repair" that replaces working
+        # locators with identical ones.
+        #
+        # Only worth a second look when NOTHING resolved. If something did resolve and the
+        # action or the check then failed, that is real, and repeating it could click the
+        # same button twice.
+        if not found_anything:
+            self.browser.wait_until_quiet()
+            outcome.tried.clear()
+            settled, _, missed = self._try_locators(step, outcome, began=began)
+            if settled is not None:
+                self._blame(missed, step)
+                return settled
+
+        self._blame(missed, step)
+        outcome.reason = "every remembered way of finding this went stale"
+        return outcome
+
+    def _try_locators(
+        self, step: Step, outcome: _StepOutcome, *, began: float
+    ) -> tuple[_StepOutcome | None, bool, list[tuple[Locator, str]]]:
+        """One pass over a step's locators, collecting misses instead of recording them.
+
+        Handing the misses back rather than applying them is the whole point. A page that
+        has not rendered yet makes every locator look dead, and writing that down would
+        damage a trail that is perfectly fine. Only the pass that actually decides the
+        step's fate gets to blame anything.
+
+        Returns the finished outcome if the step resolved either way, whether any locator
+        found an element at all, and the misses this pass would like recorded.
+        """
+        missed: list[tuple[Locator, str]] = []
+        found_anything = False
+
         for locator in step.ranked_locators():
             label = f"{locator.kind}:{locator.value}"
             outcome.tried.append(label)
 
             target = self.browser.resolve(locator)
             if target is None:
-                locator.record_miss()
-                self.events.emit(DriftDetected(index=step.index, locator=label))
+                missed.append((locator, label))
                 continue
 
+            found_anything = True
             try:
                 self._do(step, target, domain=self._domain)
             except MissingSecret:
@@ -337,8 +403,7 @@ class Executor:
                 # action, a malformed step — has to surface as itself instead of being
                 # filed away as "this locator stopped matching", which is where a real
                 # fault would go to die quietly.
-                locator.record_miss()
-                self.events.emit(DriftDetected(index=step.index, locator=label))
+                missed.append((locator, label))
                 continue
 
             changed = self._dialog_changed(step)
@@ -348,21 +413,25 @@ class Executor:
                 # reads "delete 400 rows?". Stop and let a human or the caller look.
                 outcome.reason = changed
                 outcome.duration_ms = int((time.perf_counter() - began) * 1000)
-                return outcome
+                return outcome, found_anything, missed
 
             if check_postcondition(self.browser, step.postcondition):
                 locator.record_hit()
                 outcome.matched_by = label
                 outcome.duration_ms = int((time.perf_counter() - began) * 1000)
-                return outcome
+                return outcome, found_anything, missed
 
             # It clicked something, but the page did not move the way it should have.
             # That is drift, not success — this is the check a macro recorder skips.
+            missed.append((locator, label))
+
+        return None, found_anything, missed
+
+    def _blame(self, missed: list[tuple[Locator, str]], step: Step) -> None:
+        """Write down the misses from the pass that actually decided the step."""
+        for locator, label in missed:
             locator.record_miss()
             self.events.emit(DriftDetected(index=step.index, locator=label))
-
-        outcome.reason = "every remembered way of finding this went stale"
-        return outcome
 
     def _read_answer(self, step: Step, target) -> None:
         """Replay a remembered read and keep what it said.

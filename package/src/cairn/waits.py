@@ -27,6 +27,12 @@ DEFAULT_WAIT_MS = 15000
 # because replay tries several locators in turn and a miss is expected information.
 LOCATOR_WAIT_MS = 1500
 
+# How long to let a page go quiet before deciding a control is genuinely gone. Only ever
+# spent when EVERY locator missed, which on a slow site usually means the page had not
+# finished drawing rather than that the site changed. Bounded, because a page that polls
+# in the background never goes quiet at all.
+QUIET_WAIT_MS = 5000
+
 
 @dataclass(frozen=True)
 class WaitSpec:
