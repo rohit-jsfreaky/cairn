@@ -1,6 +1,7 @@
 # Cairn — a browser memory for AI agents
 
 [![tests](https://github.com/rohit-jsfreaky/cairn/actions/workflows/test.yml/badge.svg)](https://github.com/rohit-jsfreaky/cairn/actions/workflows/test.yml)
+[![PyPI](https://img.shields.io/pypi/v/cairn-browser-mcp?label=cairn-browser-mcp)](https://pypi.org/project/cairn-browser-mcp/)
 
 **Your AI can use websites. But it forgets how, every single time. Cairn makes it remember.**
 
@@ -14,37 +15,33 @@ way. Agents can leave them for each other too — see [Sharing](#sharing-a-trail
 
 [Install](#install) · [Quick start](#quick-start) · [How it works](#how-it-works) ·
 [Sharing](#sharing-a-trail) · [Selling](#selling-a-trail) · [Forgetting](#forgetting) ·
-[Prior work](#prior-work)
+[Troubleshooting](#when-something-goes-wrong) · [Prior work](#prior-work)
 
 ---
 
 ## Install
 
-Python 3.11 or newer. Nothing is published to PyPI yet, so install from a clone:
+Python 3.11 or newer.
 
 ```bash
-git clone https://github.com/rohit-jsfreaky/cairn
-cd cairn
-
-python -m venv .venv
-.venv/Scripts/python -m pip install -e package -e mcp   # Windows
-# .venv/bin/python -m pip install -e package -e mcp     # macOS / Linux
-
-.venv/Scripts/python -m playwright install chromium
+pip install cairn-browser-mcp
+playwright install chromium      # the browser is a separate download, ~150 MB
 ```
 
 Then point your AI at it. For Claude Code, from the folder you want to work in:
 
 ```bash
-claude mcp add cairn -- /absolute/path/to/cairn/.venv/Scripts/cairn-mcp.exe   # Windows
-claude mcp add cairn -- /absolute/path/to/cairn/.venv/bin/cairn-mcp           # macOS / Linux
+claude mcp add cairn -- cairn-mcp
 ```
-
-Opening Claude Code **inside this repository** needs none of that — the checked-in
-`.mcp.json` offers the server straight away, on any operating system.
 
 Cursor and Codex take the same command in their own MCP config. Cairn is one stdio server
 with no arguments, so anything that speaks MCP will run it.
+
+Check the install at any time — it names anything missing and the command that fixes it:
+
+```bash
+cairn doctor
+```
 
 **No API key.** Cairn never calls a model — yours does the thinking. Memory is a local SQLite
 file, and no account is needed for that either.
@@ -53,7 +50,7 @@ Selling and buying trails needs a web server and a wallet library, which nobody 
 wants a browser with a memory should have to install. They are an optional extra:
 
 ```bash
-.venv/Scripts/python -m pip install -e "package[market]"
+pip install "cairn-browser-mcp[market]"
 ```
 
 ## Quick start
@@ -304,21 +301,100 @@ page in the repo containing all nine at once, and a test that walks every one.
 anticipated. It is deliberately never recorded into a route, because a step made of code
 cannot be repaired.
 
-## Development
+## When something goes wrong
+
+Start here:
 
 ```bash
-# Install the market extra first, or the 47 tests covering the Base payment path
-# are skipped and the run still says "all passed".
-.venv/Scripts/python -m pip install -e "package[dev,market]" -e "mcp[dev]"
+cairn doctor
+```
 
-cd package && ../.venv/Scripts/python -m pytest      # 521 tests
+It checks everything Cairn needs that is not Python code — the browser, the profile, the
+memory file, a writable downloads folder, and the optional market extra — and prints the
+exact command to fix whatever is missing. It exits non-zero only if something essential is
+broken, so it is safe to put in a setup script.
+
+```
+  ok    python     3.13
+  ok    cairn      0.1.0
+  ok    browser    chrome
+  ok    profile    opens with bundled Chromium
+  ok    memory     3 site(s) remembered
+  ok    downloads  /home/you/.cairn/downloads
+  --    market     not installed
+        Only needed to sell or buy trails: pip install "cairn-browser-mcp[market]"
+
+  Everything Cairn needs is here.
+```
+
+The five things that actually go wrong:
+
+**"Cairn has no browser to drive yet."**
+`pip install` brings the Python code, not a browser — Chromium is a separate ~150 MB
+download. Run `playwright install chromium`. This is the most common first-run failure and
+nothing is wrong with your setup.
+
+**"Cairn cannot open a window here: this machine has no screen."**
+Signing in happens in a real window a person types into, so `cairn login` cannot work over
+plain SSH or in a container. Either sign in on a computer with a desktop and copy
+`~/.cairn/browser-profile` across, or forward a display with `ssh -X`. Normal runs are
+headless and unaffected.
+
+**"Cairn could not open its browser profile."**
+Two different causes produce the identical message from the browser, and Cairn will not
+guess between them: another Cairn run or a sign-in window still has the profile open, or the
+profile is in a state no browser will accept. Close any other run first. If that was not it,
+deleting `~/.cairn/browser-profile` fixes it — at the cost of signing you out everywhere.
+
+To run two agents at the same time, give each its own profile instead of sharing one:
+
+```bash
+CAIRN_PROFILE=~/.cairn/profile-b cairn-mcp
+```
+
+**A captcha.**
+Cairn stops and says so. It does **not** mark the trail broken and does not try to solve it —
+a captcha is a human check, and pretending otherwise would throw away good steps for a page
+the run never reached. Open the site yourself, clear the check once, and run again.
+
+**"Cairn needs the password for … and never stores it."**
+By design: a trail records *that* a password is typed, never the value. Provide it on the
+machine that replays, either as an environment variable
+(`CAIRN_SECRET_BILLING_ACME_COM_PASSWORD`) or in `~/.cairn/secrets.json`:
+
+```json
+{ "billing.acme.com": { "password": "..." } }
+```
+
+Neither is ever written to memory. Export a trail and grep it — there is nothing to find.
+
+## Development
+
+Working on Cairn itself, rather than using it:
+
+```bash
+git clone https://github.com/rohit-jsfreaky/cairn
+cd cairn
+python -m venv .venv
+
+# Install the market extra too, or the 47 tests covering the Base payment path
+# are skipped and the run still says "all passed".
+.venv/Scripts/python -m pip install -e "package[dev,market]" -e "mcp[dev]"   # Windows
+# .venv/bin/python -m pip install -e "package[dev,market]" -e "mcp[dev]"     # macOS / Linux
+
+.venv/Scripts/python -m playwright install chromium
+
+cd package && ../.venv/Scripts/python -m pytest      # 539 tests
 cd mcp     && ../.venv/Scripts/python -m pytest      #  98 tests
 ../.venv/Scripts/python -m ruff check src/ tests/
 ```
 
+Opening Claude Code **inside the clone** needs no `claude mcp add` — the checked-in
+`.mcp.json` offers the server straight away, on any operating system.
+
 ```
 package/   the engine — browser, memory, replay, repair, sharing, CLI
-mcp/       the MCP server: 14 tools over the engine
+mcp/       the MCP server: 15 tools over the engine
 frontend/  the landing page
 ```
 

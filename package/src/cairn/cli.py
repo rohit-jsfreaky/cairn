@@ -6,6 +6,7 @@
     cairn show   <domain>            the trail, step by step
     cairn forget --site <domain>     THE DELETION GATE
     cairn export <domain>            the raw playbook as JSON
+    cairn doctor                     check this machine and say what to fix
 
     cairn share  <site>              leave a trail for another agent, free
     cairn borrow <site>              take a trail another agent left, free
@@ -34,6 +35,7 @@ import sys
 from urllib.parse import urlparse
 
 from .browser import DEFAULT_PROFILE, Browser, NoDisplay, ProfileUnavailable, domain_of
+from .doctor import cmd_doctor
 from .events import Emitter, Event
 from .executor import Executor, NoTrailError
 from .store import CairnStore, TrailAlreadyHere, best_match, slug
@@ -509,6 +511,11 @@ def build_parser() -> argparse.ArgumentParser:
     buy.add_argument("--task", default=None, help="which trail, if the shop has several")
     buy.add_argument("--force", action="store_true", help="take it even over a trail you repaired")
     buy.set_defaults(func=cmd_buy)
+
+    doctor = subs.add_parser(
+        "doctor", help="check this machine has everything Cairn needs, and say what to fix"
+    )
+    doctor.set_defaults(func=cmd_doctor)
 
     export = subs.add_parser("export", help="print the raw playbook as JSON")
     export.add_argument("domain")

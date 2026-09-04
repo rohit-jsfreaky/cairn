@@ -199,3 +199,35 @@ them signed in. Nothing here is demo-site-only any more.
   **CI.** `.github/workflows/test.yml` installs from scratch on Ubuntu against Python 3.11
   and 3.13, runs both suites with `[market]`, and checks ruff. It cannot run until Rohit
   pushes. The lint commands were verified locally from the repo root first.
+
+- **2026-09-04 (items 1 and 2 tested for real — both pass)** — the two things a test suite
+  could not prove, driven through the actual `cairn-mcp` processes over stdio rather than
+  in-process, with a small MCP client written for the purpose.
+
+  **Two agents at once, two profiles — PASSES.** Two real `cairn-mcp` processes with
+  different `CAIRN_AGENT`, `CAIRN_PROFILE` and `CAIRN_DB` both opened a browser and read a
+  page while the other still held its own. Chrome allows one process per profile, and this
+  is exactly what the x402 demo needs; it had never been tested and could only have failed
+  in front of a judge.
+
+  **The whole story through the MCP tools — PASSES, including a real payment.** Alice
+  learned the demo site through `cairn_act`/`cairn_read`/`cairn_save` (6 steps), replayed it
+  warm (6 steps, 0 model calls), shared it and opened a shop. Bob — his own agent, profile
+  and memory — bought it through **`cairn_buy`**, which had never been driven through the
+  tool surface before, only the CLI. Real settled payments on Base Sepolia each run:
+  `0x322eb239…`, `0x103f939a…`. Then `cairn_forget` and the site went back to unknown with
+  `was_forgotten=True`.
+
+  **Two apparent failures turned out to be the product being right.** A bought trail would
+  not replay for Bob — because `for_sharing()` strips EVERY typed value, so the trail needed
+  BOTH `email` and `password`, and the harness had supplied only the password. `cairn_buy`
+  had already said so in `you_must_supply`; the harness ignored it. With both set, Bob
+  replays 6 of 6. That is the headline feature working: what is sold is the route, never the
+  account.
+
+  **One thing left unexplained.** On the first attempt the shop answered HTTP 500 to the
+  paid request. It has not reproduced in four later runs. The only suspect is two processes
+  holding one SQLite memory file at once — Alice's MCP server and Alice's shop — after the
+  MCP server had just failed a run mid-way. Worth knowing before the demo: share from the
+  CLI and start the shop, rather than pointing a busy MCP server and a shop at the same
+  database.

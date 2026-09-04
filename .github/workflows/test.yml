@@ -1,11 +1,13 @@
-# Cairn runs on Linux too — proved here rather than assumed.
+# Cairn runs on Linux and macOS too — proved here rather than assumed.
 #
-# Everything was built and tested on Windows. This workflow installs from a clean checkout
-# the way the README tells a stranger to, on Ubuntu, and runs the whole suite. If a path
-# separator or a `.exe` ever creeps into the engine, this is what catches it.
+# Everything was built on Windows. This workflow installs from a clean checkout, the way the
+# README tells a stranger to, on all three operating systems, and runs the whole suite. The
+# first time it ran it immediately found a test that could not pass on Linux at all, after
+# 616 tests had been green on Windows for days. That is what this file is for.
 #
-# Two Python versions because the README promises "3.11 or newer", and a promise nobody
-# checks is a guess. They run in parallel, so this costs wall-clock nothing.
+# Both ends of the supported Python range are covered, because the README promises "3.11 or
+# newer" and a promise nobody checks is a guess. The jobs run in parallel, so three
+# operating systems cost the same wall-clock as one.
 #
 # `[market]` is installed on purpose. Both market test files start with
 # `pytest.importorskip("x402")`, so without the extra the 47 tests covering the Base and
@@ -20,12 +22,21 @@ on:
 
 jobs:
   test:
-    name: python ${{ matrix.python }} on ubuntu
-    runs-on: ubuntu-latest
+    name: python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      # Never stop the other jobs because one failed. A failure on one operating system
+      # is exactly the thing worth seeing next to a pass on the others.
       fail-fast: false
       matrix:
-        python: ["3.11", "3.13"]
+        # Ubuntu carries both ends of the supported Python range. macOS and Windows each
+        # take one end, which covers three operating systems and both versions without
+        # paying for six runners.
+        include:
+          - { os: ubuntu-latest, python: "3.11" }
+          - { os: ubuntu-latest, python: "3.13" }
+          - { os: macos-latest, python: "3.13" }
+          - { os: windows-latest, python: "3.11" }
 
     steps:
       - uses: actions/checkout@v7
@@ -39,15 +50,22 @@ jobs:
             mcp/pyproject.toml
 
       - name: Install Cairn
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e "package[dev,market]" -e "mcp[dev]"
 
-      # --with-deps pulls the system libraries headless Chromium needs on a bare runner.
-      # No real Chrome here on purpose: that exercises the fallback to bundled Chromium,
-      # which is the path most people actually hit.
+      # No real Chrome on any of these runners, on purpose: that exercises the fallback to
+      # bundled Chromium, which is the path most people actually hit.
       - name: Install the browser
-        run: python -m playwright install --with-deps chromium
+        shell: bash
+        run: python -m playwright install chromium
+
+      # Only Linux needs system libraries pulled in for headless Chromium. `install-deps`
+      # is apt-based and has nothing to do on macOS or Windows.
+      - name: Linux browser libraries
+        if: runner.os == 'Linux'
+        run: python -m playwright install-deps chromium
 
       # Failures are reported twice on purpose: once into the job summary a person reads,
       # and once as ::error:: annotations. Downloading a run's log needs admin rights on
@@ -62,6 +80,9 @@ jobs:
       # The headed path is covered on a developer machine, which is also where it is used.
       - name: Engine tests
         working-directory: package
+        # Explicit, because Windows runners default to PowerShell and everything below
+        # is bash. GitHub ships bash on all three operating systems.
+        shell: bash
         run: |
           set +e
           python -m pytest -q --tb=short -rf --maxfail=8 > pytest.log 2>&1
@@ -82,6 +103,9 @@ jobs:
 
       - name: MCP tests
         working-directory: mcp
+        # Explicit, because Windows runners default to PowerShell and everything below
+        # is bash. GitHub ships bash on all three operating systems.
+        shell: bash
         run: |
           set +e
           python -m pytest -q --tb=short -rf --maxfail=8 > pytest.log 2>&1

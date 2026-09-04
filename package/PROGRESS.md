@@ -898,3 +898,73 @@ is the biggest remaining gap between "demo" and "product".
   at the same time was cooking Rohit's laptop. From here: one process at a time, targeted
   files locally, and the full 600-test sweep belongs to CI, which runs it on GitHub's
   machines on two Python versions for free.
+
+- **2026-09-04 (item 3 — the real sites, re-walked, plus a genuinely hard new one)** — four
+  trails now, all at health 1.0, every one replayed in 2 steps with **zero model calls**.
+
+  **GitHub, both trails still hold.** `microsoft/playwright` came back **153** open issues
+  against **117** on Sep 2 — the number moved, which is the proof that replay reads the live
+  page rather than handing back a stored answer. `elysiajs/elysia-openapi` replayed in 1.3s.
+
+  **PostHog, relearned.** Its trail had been wiped by an earlier deletion-gate demo. Signed
+  in and working through the Chromium-owned profile, so yesterday's browser fallback kept the
+  session exactly as it claimed. 2 steps, 2.3s.
+
+  A mistake worth writing down: the first attempt remembered
+  `[data-attr='web-analytics-dashboard']`, which is the ENTIRE dashboard — thousands of
+  characters, precisely the anti-pattern `cairn_read`'s own description warns about. Caught
+  it, used `restart_trail`, and narrowed to `> div:first-child`, which returns just the
+  summary strip. The warning in that tool description earns its place.
+
+  **Google Search Console — the hardest site tried so far, and it works.** 2 steps, 926ms,
+  0 model calls, on a signed-in Google property.
+
+  Two findings from it:
+
+  - **Google did NOT block the Chromium-owned profile.** The sign-in went through by hand.
+    That had been the open worry since the profile stopped being Chrome-owned.
+  - **GSC offers nothing durable to hold on to.** No `data-*`, no ids, no aria-labels on the
+    numbers — only obfuscated class names like `.qL2dyd` that change on every Google deploy.
+    So this trail WILL break, and that is not a flaw to hide: Cairn will detect the drift,
+    stop at that one step and ask for a one-step repair. It is the honest answer for a site
+    that gives you nothing stable, and worth saying out loud rather than pretending the nine
+    locators save you everywhere.
+
+  Still unresolved: real Chrome continues to refuse this profile, so it stays Chromium-owned.
+  It has cost nothing so far — PostHog and Google both work — but the cause is still unknown.
+- **2026-09-04 (three things asked for, all done: CI on three operating systems, `cairn
+  doctor`, README troubleshooting)** — everything a stranger meets before they meet the
+  product.
+
+  **CI now runs on macOS and Windows too.** `.github/workflows/test.yml` went from one job to
+  four: ubuntu 3.11, ubuntu 3.13, macos 3.13, windows 3.11. Ubuntu carries both ends of the
+  supported Python range, the other two take one end each — three operating systems and both
+  versions without paying for six runners. Two things Windows needed: `shell: bash` on the
+  install and both test steps, because Windows runners default to PowerShell and every script
+  in the file is bash; and `playwright install-deps chromium` split off into a Linux-only
+  step, since it is apt-based and has nothing to do elsewhere. Cannot be confirmed green
+  until Rohit pushes.
+
+  **`cairn doctor` exists** — `package/src/cairn/doctor.py`, 10 tests. It checks the seven
+  things Cairn needs that are not Python code: Python version, the installed version, a
+  browser that starts, the profile opening, memory readable, a writable downloads folder, and
+  the optional market extra. Each failure prints the exact command that fixes it. Essential
+  and optional are separated, so it exits non-zero only when something is genuinely broken —
+  usable in someone's setup script. It is built out of the failures this project actually
+  hit, not imagined ones.
+
+  Its own output is the standing record of the profile fault: `browser: chrome` (clean mode
+  uses real Chrome) next to `profile: opens with bundled Chromium`. Consistent with the
+  unexplained refusal, and now visible without reading any code.
+
+  One bug of mine while writing it: `tempfile.mkstemp` hands back an OPEN handle, and Windows
+  refuses to delete a file that is still open, so the downloads probe failed on the machine it
+  was written on. `os.close(handle)` before the unlink.
+
+  **README has a troubleshooting section.** The five failures we know are real, in the words
+  the code actually prints: no browser (`playwright install chromium` — the most common first
+  run), no screen, the profile refusing to open (both causes named, plus `CAIRN_PROFILE` for
+  two agents at once), a captcha, and a missing password. All of these had good error messages
+  already; none could be found without hitting them first. `cairn doctor` leads the section.
+
+  539 engine tests (was 524 in the README) and 98 MCP tests, ruff clean.
