@@ -280,7 +280,7 @@ def test_a_new_tab_is_noticed_but_not_switched_to(browser: Browser, demo_server:
     browser.page.goto(f"{demo_server}/")
     was = browser.page
     browser.page.evaluate("window.open(location.href, '_blank')")
-    browser.page.wait_for_timeout(300)
+    _wait_for_tabs(browser, 2)
 
     assert len(browser.tabs) == 2
     assert browser.page is was
@@ -289,7 +289,7 @@ def test_a_new_tab_is_noticed_but_not_switched_to(browser: Browser, demo_server:
 def test_switch_to_the_latest_tab(browser: Browser, demo_server: str) -> None:
     browser.page.goto(f"{demo_server}/")
     browser.page.evaluate("window.open(location.href, '_blank')")
-    browser.page.wait_for_timeout(300)
+    _wait_for_tabs(browser, 2)
 
     browser.switch_tab("latest")
     assert browser.page is browser.tabs[-1]
@@ -298,11 +298,32 @@ def test_switch_to_the_latest_tab(browser: Browser, demo_server: str) -> None:
 
 
 def test_switch_by_number(browser: Browser, demo_server: str) -> None:
+    """Deliberately does NOT wait first: `switch_tab` has to do the waiting itself.
+
+    This is the test macOS CI failed. It slept 300 ms and assumed the tab had arrived —
+    enough on Linux and Windows, not enough there, which means it was never long enough
+    anywhere, only lucky. A site opening a tab is exactly this race in real use.
+    """
     browser.page.goto(f"{demo_server}/")
     browser.page.evaluate("window.open(location.href, '_blank')")
-    browser.page.wait_for_timeout(300)
+
     browser.switch_tab("1")
+
     assert browser.page is browser.tabs[1]
+
+
+def _wait_for_tabs(browser: Browser, count: int, timeout_ms: int = 5000) -> None:
+    """Wait for the condition, never for a fixed number of milliseconds.
+
+    A tab opened by the page arrives on an event, and how long that takes depends on the
+    machine. Sleeping a guessed amount is how a suite passes on two operating systems and
+    fails on the third.
+    """
+    waited = 0
+    while len(browser.tabs) < count and waited < timeout_ms:
+        browser.tabs[0].wait_for_timeout(50)
+        waited += 50
+    assert len(browser.tabs) >= count, f"only {len(browser.tabs)} tab(s) after {waited}ms"
 
 
 def test_switching_to_a_tab_that_is_not_there(browser: Browser) -> None:

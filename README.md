@@ -13,6 +13,8 @@ all.** When the site changes, Cairn repairs the one step that moved and keeps th
 A cairn is a small pile of stones hikers leave on a trail, so the next traveller knows the
 way. Agents can leave them for each other too — see [Sharing](#sharing-a-trail).
 
+**[cairnmcp.fun](https://cairnmcp.fun)**
+
 [Install](#install) · [Quick start](#quick-start) · [How it works](#how-it-works) ·
 [Sharing](#sharing-a-trail) · [Selling](#selling-a-trail) · [Forgetting](#forgetting) ·
 [Troubleshooting](#when-something-goes-wrong) · [Prior work](#prior-work)

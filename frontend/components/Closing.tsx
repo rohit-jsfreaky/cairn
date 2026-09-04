@@ -8,7 +8,7 @@ export function Closing() {
     <div className="p-2 md:p-4" id="install">
       <section className="relative scroll-mt-16 overflow-hidden rounded-2xl bg-white shadow-[0_2px_6px_rgb(10_11_12/0.04),0_24px_60px_-32px_rgb(10_11_12/0.20)] md:rounded-3xl">
         <Image
-          src="/art/band-glow.png"
+          src="/art/band-glow.webp"
           alt=""
           fill
           sizes="100vw"

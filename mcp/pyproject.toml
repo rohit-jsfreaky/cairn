@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cairn-browser-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Cairn as MCP tools: a browser with a memory, for Claude Code, Cursor and Codex."
 requires-python = ">=3.11"
 license = "MIT"
@@ -42,7 +42,7 @@ dev = ["pytest>=8.0"]
 market = ["cairn-browser[market]"]
 
 [project.urls]
-Homepage = "https://github.com/rohit-jsfreaky/cairn"
+Homepage = "https://cairnmcp.fun"
 Repository = "https://github.com/rohit-jsfreaky/cairn"
 Issues = "https://github.com/rohit-jsfreaky/cairn/issues"
 

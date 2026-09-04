@@ -10,7 +10,7 @@ export function Hero() {
         <section className="relative overflow-hidden rounded-2xl bg-[#cfe8f8] shadow-[0_2px_6px_rgb(10_11_12/0.04),0_24px_60px_-32px_rgb(10_11_12/0.24)] md:rounded-3xl">
           <div className="absolute inset-0 scale-110" data-hero-photo>
             <Image
-              src="/art/hero-sky.png"
+              src="/art/hero-sky.webp"
               alt=""
               fill
               priority

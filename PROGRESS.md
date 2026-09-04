@@ -664,3 +664,68 @@ split out of Phase 5 because it needs no blockchain and no Discord answer.
   (the two files the `link_target` change actually touches), plus the clean-venv install
   check above. The rest is CI's job on the next push, and if it is red the fix ships as
   0.2.1 — a PyPI version can never be replaced.
+
+- **2026-09-05 (the real domain, and the images)** — Rohit bought **cairnmcp.fun**.
+
+  `metadataBase` now DEFAULTS to it rather than falling back to `http://localhost:3000`. That
+  fallback was a real trap: a deploy that forgot the environment variable would publish
+  `http://localhost:3000/opengraph-image` as its social card — a link broken everywhere except
+  the machine that built it. `NEXT_PUBLIC_SITE_URL` still wins, so a preview deployment can
+  point at itself. Added a canonical URL, `og:url`, `og:site_name`, `og:locale`, plus
+  `robots.ts` and `sitemap.ts` that both read the same constant, so the domain cannot be right
+  in one place and stale in another.
+
+  **The page art is WebP now: 2,008 KB became 27 KB.** `hero-sky` 1,155 → 18 KB and
+  `band-glow` 853 → 9 KB, at `cwebp -q 82 -m 6`, which measures ~50 dB PSNR — visually
+  identical, and the built page was checked side by side to be sure.
+
+  **The social cards were deliberately NOT converted to WebP**, though that is what was asked
+  for. Next's own installed docs (`node_modules/next/dist/docs/.../opengraph-image.md`) list
+  `.jpg .jpeg .png .gif` for `opengraph-image` and `twitter-image`, and `.ico .jpg .jpeg .png
+  .svg` for icons — WebP is in neither, and social platforms handle it badly anyway.
+  Converting them would have broken the exact thing the domain change exists to fix. They went
+  to progressive JPEG instead: **651 KB → 62 KB each**, checked by eye for artefacts.
+
+  `logo-mark.png` and `logo.svg` are referenced by nothing — the mark is drawn inline in
+  `CairnMark`. Left in place as source assets for the posts and the video rather than deleted.
+
+  Both `pyproject.toml` Homepages now point at the site. That only reaches the PyPI page on the
+  NEXT release; 0.2.0 went out an hour earlier and cannot be re-uploaded.
+
+- **2026-09-05 (macOS CI found a real race, not a test wobble)** — 596 passed, one failed, and
+  only on macOS: `test_switch_by_number` asked for tab 1 and was told there was only one tab.
+
+  The test slept a fixed 300 ms after `window.open` and assumed the tab had arrived. That was
+  enough on Linux and Windows and not enough on a macOS runner — which means it was never
+  long enough anywhere, only lucky.
+
+  **The same race is in the product, which is why this is not just a test fix.** A tab opened
+  by the SITE arrives on a Playwright event, not on the call that caused it, so there is a gap
+  between `window.open` returning and Cairn knowing the tab exists. A host AI that clicks a
+  `target=_blank` link and then calls `switch_tab` can land in exactly that gap and be told the
+  tab is not there.
+
+  `switch_tab` now waits for a tab that is still opening, using the same poll-and-return shape
+  as the download grace period (`TAB_GRACE_MS`, `TAB_POLL_MS`) — it returns the moment the tab
+  appears, so only a run where the tab genuinely never arrives pays the wait. It waits for ONE
+  pending tab only: asking for tab 7 with one open is a mistake, not a race, and still fails
+  at once.
+
+  The sleeping is done through Playwright rather than `time.sleep`, because the sync API only
+  delivers its events while a Playwright call is running — a plain sleep would sit there and
+  the tab would never be reported at all.
+
+  The three tab tests now wait for the CONDITION instead of a guessed number of milliseconds,
+  and `test_switch_by_number` deliberately does not wait at all any more: `switch_tab` has to
+  do the waiting itself, which is the thing being claimed.
+
+  **Released 0.2.1** the same day, both packages. The engine carries the tab fix; the MCP
+  package had no code change and went out only so its PyPI page shows cairnmcp.fun, which a
+  metadata edit cannot reach without a release.
+
+  The dependency floor stayed at `cairn-browser>=0.2.0` on purpose — nothing in the server
+  needs the tab fix, and raising a floor for a bug fix would force an upgrade nobody asked
+  for. One consequence worth knowing, seen while verifying: for a minute after upload, PyPI's
+  index had the MCP package at 0.2.1 while still offering the engine at 0.2.0, so a fresh
+  install in that window paired 0.2.1 with 0.2.0. Correct — the floor allows it — just
+  without the tab fix. It settles on its own; `--no-cache-dir` forces the point.

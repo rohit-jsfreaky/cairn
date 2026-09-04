@@ -153,3 +153,30 @@ Dashboard (Phase 4) — still blocked on `backend/`. Do not start it early.
   Checked on a real build (`next build` + `next start`), not in dev: reads as three tidy lines
   at desktop width, and at 390px there is no horizontal overflow (`scrollWidth === clientWidth
   === 375`). Typecheck clean.
+
+- **2026-09-05 (the real domain, and the images)** — Rohit bought **cairnmcp.fun**.
+
+  `metadataBase` now DEFAULTS to it rather than falling back to `http://localhost:3000`. That
+  fallback was a real trap: a deploy that forgot the environment variable would publish
+  `http://localhost:3000/opengraph-image` as its social card — a link broken everywhere except
+  the machine that built it. `NEXT_PUBLIC_SITE_URL` still wins, so a preview deployment can
+  point at itself. Added a canonical URL, `og:url`, `og:site_name`, `og:locale`, plus
+  `robots.ts` and `sitemap.ts` that both read the same constant, so the domain cannot be right
+  in one place and stale in another.
+
+  **The page art is WebP now: 2,008 KB became 27 KB.** `hero-sky` 1,155 → 18 KB and
+  `band-glow` 853 → 9 KB, at `cwebp -q 82 -m 6`, which measures ~50 dB PSNR — visually
+  identical, and the built page was checked side by side to be sure.
+
+  **The social cards were deliberately NOT converted to WebP**, though that is what was asked
+  for. Next's own installed docs (`node_modules/next/dist/docs/.../opengraph-image.md`) list
+  `.jpg .jpeg .png .gif` for `opengraph-image` and `twitter-image`, and `.ico .jpg .jpeg .png
+  .svg` for icons — WebP is in neither, and social platforms handle it badly anyway.
+  Converting them would have broken the exact thing the domain change exists to fix. They went
+  to progressive JPEG instead: **651 KB → 62 KB each**, checked by eye for artefacts.
+
+  `logo-mark.png` and `logo.svg` are referenced by nothing — the mark is drawn inline in
+  `CairnMark`. Left in place as source assets for the posts and the video rather than deleted.
+
+  Both `pyproject.toml` Homepages now point at the site. That only reaches the PyPI page on the
+  NEXT release; 0.2.0 went out an hour earlier and cannot be re-uploaded.

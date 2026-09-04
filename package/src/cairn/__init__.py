@@ -22,7 +22,7 @@ from .models import (
 from .operations import Session
 from .store import CairnStore
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "Browser",

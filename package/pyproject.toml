@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # 2026-09-04). Only the DISTRIBUTION name changes — the import package is still
 # `cairn` and the command is still `cairn`.
 name = "cairn-browser"
-version = "0.2.0"
+version = "0.2.1"
 description = "A browser memory for AI agents: learn a site once, replay the trail with no model calls."
 requires-python = ">=3.11"
 license = "MIT"
@@ -36,7 +36,7 @@ dev = ["pytest>=8.0", "fastapi>=0.141.1", "uvicorn>=0.52.4"]
 market = ["x402[evm,fastapi,requests]>=2.21.0", "fastapi>=0.141.1", "uvicorn>=0.52.4"]
 
 [project.urls]
-Homepage = "https://github.com/rohit-jsfreaky/cairn"
+Homepage = "https://cairnmcp.fun"
 Repository = "https://github.com/rohit-jsfreaky/cairn"
 Issues = "https://github.com/rohit-jsfreaky/cairn/issues"
 

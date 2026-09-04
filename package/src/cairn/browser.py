@@ -110,6 +110,15 @@ DISMISS = "dismiss"
 LATEST_TAB = "latest"
 MAIN_TAB = "main"
 
+# A tab opened by the SITE arrives on an event, not on the call that caused it, so there is
+# a gap between `window.open` returning and Cairn knowing the tab exists. Poll for it
+# rather than guessing one fixed delay — the same shape as the download grace period, and
+# for the same reason. macOS CI found this: a 300 ms sleep in a test was enough on Linux
+# and Windows and not enough there, which means it was never long enough anywhere, only
+# lucky.
+TAB_GRACE_MS = 3000
+TAB_POLL_MS = 50
+
 # How much visible page text one look() may return. Enough to read a heading, an amount
 # and an error message; not so much that a caller pays for the whole page every time.
 MAX_TEXT_CHARS = 1200
@@ -663,6 +672,13 @@ class Browser:
 
     def switch_tab(self, which: str = LATEST_TAB) -> Page:
         """Continue in another tab. `latest`, `main`, or a number from 0."""
+        # Asking for tab 1 says the caller believes a second tab exists. If it does not yet,
+        # that is far more likely to be a tab still opening than a mistake, so wait for it
+        # before saying it is not there.
+        if which not in (LATEST_TAB, MAIN_TAB):
+            with suppress(ValueError):
+                self._await_tab(int(which) + 1)
+
         self.tabs = [page for page in self.tabs if not page.is_closed()]
         if not self.tabs:
             raise NoSuchTab("every tab has been closed")
@@ -682,6 +698,32 @@ class Browser:
         self._page = chosen
         chosen.bring_to_front()
         return chosen
+
+    def _await_tab(self, count: int) -> None:
+        """Give a tab that is still opening its moment to arrive.
+
+        Returns as soon as there are enough tabs, so the only run that pays the full wait
+        is one where the tab genuinely never appears.
+
+        The sleeping is done through Playwright rather than `time.sleep` on purpose: the
+        sync API delivers its events while a Playwright call is running, so a plain sleep
+        would sit there and the tab would never be reported at all.
+        """
+        waited = 0
+        while waited < TAB_GRACE_MS:
+            live = [page for page in self.tabs if not page.is_closed()]
+            if len(live) >= count:
+                return
+            if not live:
+                return
+            # Only ever wait for ONE tab that might still be opening. Asking for tab 7 with
+            # one open is a mistake rather than a race, and a mistake should be told so at
+            # once instead of after three seconds of hope.
+            if count > len(live) + 1:
+                return
+            with suppress(PlaywrightError):
+                live[0].wait_for_timeout(TAB_POLL_MS)
+            waited += TAB_POLL_MS
 
     # -------------------------------------------------------------- overlays
 
