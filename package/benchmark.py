@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import os
 import socket
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import uvicorn
 from tests.demo_site.app import app
@@ -37,6 +39,11 @@ from cairn.secrets import env_var_name
 from cairn.store import CairnStore
 
 TASK = "download this month's invoice"
+
+# A SECOND task, on a site the first one already walked. This is the part that used to cost
+# full price every time: Cairn remembered the route to the invoice and nothing about the
+# site it walked through to get there.
+SECOND_TASK = "update the billing email"
 
 
 @dataclass
@@ -116,6 +123,98 @@ def from_memory(browser: Browser, store: CairnStore, label: str, *, url: str | N
     )
 
 
+def second_task_blind(browser: Browser, store: CairnStore, url: str) -> Morning:
+    """A new task on the same site, with no map. Look at every page to find the way.
+
+    Hand-written, like Monday, and for the same reason: a real host AI takes more calls
+    than this, not fewer. It is the floor.
+    """
+    began = time.perf_counter()
+    session = Session(browser, store)
+    reads = 0
+
+    session.act("open the billing portal", "goto", value=f"{url}/")
+    page, reads = session.look(), reads + 1
+    session.act("type the account email", "fill", ref=_named(page, "Email"), value="a@b.com")
+    session.act("type the password", "fill", ref=_named(page, "Password"), value="hunter2")
+    session.act("sign in", "click", ref=_named(page, "Sign in"))
+
+    page, reads = session.look(), reads + 1
+    session.act("open settings", "click", ref=_named(page, "Settings"))
+
+    page, reads = session.look(), reads + 1
+    session.act(
+        "type the new billing email",
+        "fill",
+        ref=_named(page, "Billing email"),
+        value="ap@acme.com",
+    )
+    session.act("save it", "click", ref=_named(page, "Save changes"))
+    session.save(SECOND_TASK)
+
+    return Morning(
+        label="blind",
+        note="the way it worked before the map",
+        seconds=time.perf_counter() - began,
+        calls=session.tool_calls,
+        reads=reads,
+    )
+
+
+def second_task_with_map(browser: Browser, store: CairnStore, url: str, label: str) -> Morning:
+    """The same task, on the same site, using what Cairn already saw.
+
+    Every `ref` below is a string the map hands over — the same `use` value `cairn_map`
+    returns. Nothing here is a CSS selector somebody looked up: the sign-in fields are
+    known because task one signed in, and /settings is known because its link was in the
+    nav of a page task one walked through.
+    """
+    began = time.perf_counter()
+    session = Session(browser, store)
+    reads = 0
+    known = store.load_site_map(domain_of(url))
+
+    session.act("open the billing portal", "goto", value=f"{url}/")
+    # The front page is mapped, so these need no reading at all.
+    session.act("type the account email", "fill", ref="role=textbox|Email", value="a@b.com")
+    session.act("type the password", "fill", ref="role=textbox|Password", value="hunter2")
+    session.act("sign in", "click", ref="role=button|Sign in")
+
+    # The map knows where Settings IS, from a link seen while doing something else. No
+    # looking at the invoice page to find the nav, and no click to travel through it.
+    settings = _mapped_href(known, "Settings")
+    session.act("open settings", "goto", value=f"{url}{settings}")
+
+    if known.page(settings) is None:
+        # First visit to this page: it has to be read once, and that read maps it.
+        page, reads = session.look(), reads + 1
+        field = _named(page, "Billing email")
+        save = _named(page, "Save changes")
+    else:
+        field, save = "role=textbox|Billing email", "role=button|Save changes"
+
+    session.act("type the new billing email", "fill", ref=field, value="ap@acme.com")
+    session.act("save it", "click", ref=save)
+    session.save(SECOND_TASK)
+
+    return Morning(
+        label=label,
+        note="pages Cairn had already walked",
+        seconds=time.perf_counter() - began,
+        calls=session.tool_calls,
+        reads=reads,
+    )
+
+
+def _mapped_href(known, name: str) -> str:
+    """Where a link Cairn saw actually goes."""
+    for page in known.pages:
+        for control in page.controls:
+            if control.name == name and control.href:
+                return control.href
+    raise AssertionError(f"the map does not know a link called {name!r}")
+
+
 def main() -> int:
     url, server = _serve()
     site = domain_of(url)
@@ -154,6 +253,20 @@ def main() -> int:
         friday.label = "Friday"
         week.append(friday)
 
+    # ---- a SECOND task, on the same site ----------------------------------------
+    #
+    # Two stores on purpose. The blind run needs a Cairn that has never seen this site,
+    # which is exactly what a separate database is; the mapped run uses the one that just
+    # spent a week here. Same browser, same server, same script shape.
+    blind_store = CairnStore(db_path=str(Path(tempfile.mkdtemp()) / "blind.db"))
+    second: list[Morning] = []
+    with Browser(headless=True) as browser:
+        second.append(second_task_blind(browser, blind_store, url))
+        second.append(second_task_with_map(browser, store, url, "with map"))
+        # Now /settings is mapped too, so the last read goes as well.
+        second.append(second_task_with_map(browser, store, url, "once more"))
+    second[-1].note = "and now /settings is mapped too"
+
     server.should_exit = True
 
     print(f"\n  {TASK}, five mornings, on the demo site in this repo\n")
@@ -170,6 +283,23 @@ def main() -> int:
         f"\n  {first.calls} tool calls became {best.calls}. "
         f"{first.reads} page reads became {best.reads}. "
         f"Model calls were zero throughout, because replay is plain Python.\n"
+    )
+
+    print(f"\n  a SECOND task on the same site - {SECOND_TASK!r}\n")
+    print(f"  {'':10}  {'time':>8}  {'tool calls':>10}  {'page reads':>10}  {'model calls':>11}")
+    print(f"  {'-' * 56}")
+    for run in second:
+        print(
+            f"  {run.label:10}  {run.seconds:7.1f}s  {run.calls:>10}  "
+            f"{run.reads:>10}  {0:>11}   {run.note}"
+        )
+
+    blind, mapped, again = second
+    print(
+        f"\n  A new task on a site Cairn had already walked: {blind.reads} page reads "
+        f"became {mapped.reads}, then {again.reads}.\n"
+        f"  Nothing was replayed here - all three EXPLORED. The difference is only what "
+        f"Cairn had already seen.\n"
     )
     return 0
 

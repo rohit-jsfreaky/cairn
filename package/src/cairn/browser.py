@@ -255,6 +255,10 @@ def domain_of(url: str) -> str:
     return parsed.netloc or url
 
 
+class NoSuchElement(RuntimeError):
+    """A control was named in a way this page cannot be asked for."""
+
+
 class NoSuchTab(RuntimeError):
     """Asked to continue in a tab that is not open."""
 
@@ -926,6 +930,11 @@ class Browser:
         An element named by a CSS selector instead is resolved by that selector. Dashboards
         keep their numbers in plain `div`s with no role, which get no ref at all.
         """
+        if element.found_by is not None:
+            found = self._to_playwright(element.found_by)
+            if found is None:
+                raise NoSuchElement(f"{element.ref} is not something this page can be asked for")
+            return found.first
         if element.selector:
             return self.page.locator(element.selector).first
         return self.page.locator(f"aria-ref={element.ref}").first

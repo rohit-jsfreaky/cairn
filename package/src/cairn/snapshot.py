@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .models import Locator, href_path
+from .models import Locator, link_target
 
 # Roles worth offering to a caller. Everything else on a page is layout.
 INTERACTIVE_ROLES = frozenset(
@@ -108,6 +108,15 @@ class Element:
     no role and so is not offered as a control — is found by that selector instead. Plain
     `div`s holding the numbers are the normal case on a dashboard."""
 
+    found_by: Locator | None = None
+    """The stored locator this element was named with, when it came from MEMORY.
+
+    An element from a snapshot has a `ref`; one the caller described has a `selector`. This
+    is the third case: a control named the way the map remembers it, `role=button|Sign in`,
+    resolved by the same code replay uses. Without it the map could only ever be a hint —
+    the caller would know the button was there and still have to read the whole page to get
+    a ref before pressing it."""
+
     href: str | None = None
     clickable: bool = False
     frame: str | None = None
@@ -162,7 +171,7 @@ class Element:
         if self.test_id:
             found.append(Locator("test_id", self.test_id))
         if self.href:
-            found.append(Locator("structural", f"href={href_path(self.href)}"))
+            found.append(Locator("structural", f"href={link_target(self.href)}"))
         if self.label:
             found.append(self._pin(Locator("label", self.label)))
         if self.name:

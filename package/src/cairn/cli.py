@@ -38,6 +38,7 @@ from .browser import DEFAULT_PROFILE, Browser, NoDisplay, ProfileUnavailable, do
 from .doctor import cmd_doctor
 from .events import Emitter, Event
 from .executor import Executor, NoTrailError
+from .models import SiteMap
 from .store import CairnStore, TrailAlreadyHere, best_match, slug
 
 TICK = "+"
@@ -211,20 +212,73 @@ def cmd_login(args: argparse.Namespace) -> int:
 def cmd_sites(args: argparse.Namespace) -> int:
     store = _store(args)
     sites = store.list_sites()
-    if not sites:
+    # A site can be mapped without a trail: somebody explored it and never saved one.
+    # Leaving those out would hide memory that genuinely exists, which reads exactly
+    # like memory that does not.
+    mapped_only = [site for site in store.mapped_sites() if site not in sites]
+    if not sites and not mapped_only:
         print("\n  Cairn remembers nothing yet.\n")
         return 0
 
     print()
     for site in sites:
-        playbook = store.load_playbook(site)
-        if playbook is None:
-            continue
-        print(
-            f"  {site:<32} {len(playbook.steps)} steps  "
-            f"{playbook.runs} runs  health {playbook.health:.0%}"
-        )
+        # One row per TRAIL, not per site. This used to call `load_playbook(site)` with no
+        # task, which returns None as soon as a site has more than one — and the loop then
+        # skipped it in silence. A site with two tasks simply vanished from `cairn sites`,
+        # which is the exact shape of site this tool is for.
+        for task in store.trails_for(site) or [None]:
+            playbook = store.load_playbook(site, task)
+            if playbook is None:
+                continue
+            named = f"  {playbook.task}" if playbook.task else ""
+            print(
+                f"  {site:<24}{named:<34} {len(playbook.steps)} steps  "
+                f"{playbook.runs} runs  health {playbook.health:.0%}"
+            )
+    for site in mapped_only:
+        site_map = store.load_site_map(site)
+        pages = len(site_map.pages) if site_map else 0
+        print(f"  {site:<24}{'  (no trail yet)':<34} {pages} pages mapped")
     print()
+    return 0
+
+
+def cmd_map(args: argparse.Namespace) -> int:
+    """What Cairn saw while walking a site, rather than the route it walked.
+
+    Doubles as the consent screen for sharing: this is exactly what would be published.
+    """
+    domain = _site_key(args.domain)
+    store = _store(args)
+    site_map = store.load_site_map(domain)
+
+    if site_map is None or site_map.is_empty:
+        print(f"\n  Cairn has not looked at any page on {domain} yet.\n")
+        return 2
+
+    if args.path:
+        return _print_one_page(site_map, domain, args.path)
+
+    print(f"\n  {domain} - {len(site_map.pages)} pages Cairn has looked at\n")
+    for line in site_map.summary():
+        print(f"    {line}")
+    print("\n  This is what Cairn saw last time, not what is on the site now.\n")
+    return 0
+
+
+def _print_one_page(site_map: SiteMap, domain: str, path: str) -> int:
+    """Everything known about one page."""
+    page = site_map.page(path)
+    if page is None:
+        print(f"\n  Cairn has not looked at {path} on {domain}.")
+        print(f"    run `cairn map {domain}` to see which pages it has.\n")
+        return 2
+
+    named = f" - {page.title}" if page.title else ""
+    print(f"\n  {domain}{page.path}{named}\n")
+    for control in page.controls:
+        print(f"    {control.describe()}")
+    print(f"\n  {len(page.controls)} controls, last seen {page.last_seen}.\n")
     return 0
 
 
@@ -289,6 +343,13 @@ def cmd_share(args: argparse.Namespace) -> int:
         print("\n     these notes are now readable by every agent:")
         for note in published["notes_published"]:
             print(f"       - {note}")
+    if published["pages_published"]:
+        # Consent by inspection: whoever shares sees the exact list of pages that left,
+        # the same way they already see every note. `cairn map` shows the contents.
+        pages = published["pages_published"]
+        print(f"\n     the map of {len(pages)} page(s) went with it:")
+        for path in pages:
+            print(f"       - {path}")
     if published["values_withheld"]:
         print("\n     what was typed here did NOT leave your machine:")
         for step in published["values_withheld"]:
@@ -479,6 +540,17 @@ def build_parser() -> argparse.ArgumentParser:
     show = subs.add_parser("show", help="print one trail, step by step")
     show.add_argument("domain")
     show.set_defaults(func=cmd_show)
+
+    site_map = subs.add_parser("map", help="the pages Cairn has looked at on a site")
+    site_map.add_argument("domain")
+    site_map.add_argument(
+        "--path",
+        default=None,
+        help="one page in full: its controls and when they were seen. "
+        "The leading slash is optional, which matters on Git Bash — it rewrites "
+        "/settings into a Windows path before Cairn ever sees it",
+    )
+    site_map.set_defaults(func=cmd_map)
 
     forget = subs.add_parser("forget", help="wipe one site from memory (the deletion gate)")
     forget.add_argument("--site", required=True)

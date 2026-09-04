@@ -231,3 +231,29 @@ them signed in. Nothing here is demo-site-only any more.
   MCP server had just failed a run mid-way. Worth knowing before the demo: share from the
   CLI and start the shop, rather than pointing a busy MCP server and a shop at the same
   database.
+
+- **2026-09-05 (Phase 6b — the map reaches the host AI)** — the engine now records every page
+  it looks at (`package/PROGRESS.md` has the why). This folder is how an AI ever hears about
+  it, which is the half that decides whether the memory does any work at all.
+
+  **Pushed, not pulled.** `cairn_run` returns `pages_known` on all five branches where the AI
+  is about to explore — needs_task, the three unknown shapes, and stale. Never on success,
+  repair, blocked or needs_login: there is nothing to explore there.
+
+  **Index then detail.** A forty-page map cannot ride inside every reply and most of it is
+  irrelevant to any one task, so `cairn_run` carries the table of contents (capped at 25) and
+  `cairn_map(site, path)` opens one page.
+
+  **A real bug fixed.** The `needs_task` branch is exactly where a genuinely new task on a
+  known site arrives, and it used to end "Do NOT explore, the trail is already there". Right
+  when one of `tasks` fits, wrong when none does. It now says both halves.
+
+  **The map is actionable, which is the point.** Each control comes back with a `use` string —
+  `role=button|Sign in` — that `cairn_act` takes directly as `ref`. Without it the AI would
+  know the button was there and still have to read the whole page to get a ref. Both tool
+  descriptions say so, in the house voice.
+
+  `cairn_run`'s docstring promised "three possible answers" while the body had ten shapes.
+  It now names needs_task too, and the map.
+
+  16 tools. 112 MCP tests, ruff clean.

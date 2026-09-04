@@ -968,3 +968,147 @@ is the biggest remaining gap between "demo" and "product".
   already; none could be found without hitting them first. `cairn doctor` leads the section.
 
   539 engine tests (was 524 in the README) and 98 MCP tests, ruff clean.
+
+- **2026-09-05 (Phase 6b — the map: Cairn remembers the road, not just the destination)** —
+  the biggest change since the browsing layer, and it came from a real user rather than from
+  a plan.
+
+  Rohit put Cairn on a client marketplace — vendor, customer and admin, many pages each — to
+  drive its end-to-end tests, and found the flaw honestly: **on the first run Cairn and
+  Playwright cost the same.** Cairn's memory was keyed by (site, task), so every new task was
+  a stranger on a site it had already walked twenty times. His words: walking to the requests
+  page to submit a request meant SEEING the list, the view button and the other six sidebar
+  items, and binning all of it.
+
+  So Cairn now keeps a **map** of every page it has actually looked at, and what was on it.
+
+  **It costs nothing.** Recorded from `Session.look()` alone, because that snapshot was
+  already built, already paid for and about to be thrown away. Proved by a test: a full cold
+  walk is still 9 tool calls, exactly as before.
+
+  **The cap is load-bearing, not tidiness.** The explore pass turned up that
+  `sibyl-memory-client` has NO per-entity limit — it has a 5 MB whole-DATABASE soft cap, and
+  the search index roughly doubles every body. So a runaway map would have stopped trails,
+  site knowledge and the commons being written too, mid-run. 60 pages, 30 controls each,
+  least-recently-seen evicted first, with a test that measures a worst-case map rather than
+  asserting it is fine. The old comment at `store.py:83` claiming a 1 MiB entity cap was
+  simply wrong and is now correct.
+
+  **The gate holds.** `SITE_MAP` joins the tuple in `forget_site`, with its own case in
+  `test_deletion_gate.py`. A judge who deletes the memory and finds Cairn still knows the
+  site's shape would have found a gate that does not hold.
+
+  **Two real bugs fixed on the way, both older than this phase.**
+
+  `cairn_run`'s `needs_task` branch — which is exactly where a genuinely NEW task on a known
+  site lands — used to end "Do NOT explore, the trail is already there". True when one of
+  `tasks` fits; simply wrong when none does, which is the whole case this phase exists for.
+
+  And `cairn sites` **silently hid any site with more than one trail**. It called
+  `load_playbook(site)` with no task, which returns None as soon as a site has two, then
+  `continue`d past it without a word — so a site with two tasks vanished from the list
+  entirely. That is the exact shape of site this phase is about, and it was only found
+  because the new benchmark saved a second task. It now prints one row per trail.
+
+  **Beyond the plan, and the thing that makes it work: the map is actionable.** A map you can
+  only read is a hint — the AI would know the Sign in button was there and STILL have to read
+  the whole page to get a ref before pressing it, which is the cost the map exists to remove.
+  So `cairn_act` now accepts `role=button|Sign in` and `href=/settings`, the same vocabulary a
+  trail already stores, resolved by the same code replay uses. `cairn_map` hands back a ready
+  `use` string per control. `describe()` still runs afterwards, so a step saved this way gets
+  all nine durable locators exactly as a snapshot element would.
+
+  **Rohit's call, taken against my recommendation:** the map travels when a trail is shared or
+  sold. It merges rather than replaces, so two agents who walked different corners end up
+  knowing both. The FREE catalogue advertises a page COUNT only — never the pages — so a
+  browsing stranger can see a map is worth paying for without being handed it. `cairn share`
+  prints exactly which paths left, and `cairn map` shows their contents beforehand: consent by
+  inspection, the same guarantee the notes already had.
+
+  **The demo site grew two real pages.** Its nav already listed Payments and Settings and both
+  were decoration pointing back at `/invoices`. A site with one destination cannot show what a
+  map is for.
+
+  **The measured numbers** (`python benchmark.py`, same site, a DIFFERENT task, nothing
+  replayed — all three exploring from scratch):
+
+  ```
+                  time  tool calls  page reads  model calls
+  blind           0.6s          10           3            0   the way it worked before the map
+  with map        0.3s           8           1            0   pages Cairn had already walked
+  once more       0.3s           7           0            0   and now /settings is mapped too
+  ```
+
+  Three page reads became one, then none. Both scripts are hand-written, exactly as Monday
+  already was, and the benchmark says so — it measures what the map makes available, not an
+  AI being clever.
+
+  591 engine tests, 112 MCP tests, ruff clean. New surface: `cairn map <domain> [--path]`,
+  `cairn_map(site, path?)`, `pages_known` on five `cairn_run` branches, and `cairn sites` now
+  showing a site that was explored but never saved.
+
+  Still to do: the marketplace run for the real headline number, which is Rohit's.
+
+- **2026-09-05 (gap 2: the map on real websites, and the five bugs that found)** — the map
+  had only ever run against the demo site in this repo. Driven through a REAL `cairn-mcp`
+  process over stdio, against six real sites, it worked — and immediately exposed things the
+  demo site is too polite to show.
+
+  | site | offered | pages | controls kept | note |
+  |---|---|---|---|---|
+  | github.com | 60 | 2 | 100 | followed `https://github.com/pricing` from the map |
+  | developer.mozilla.org | 60 | 2 | 100 | followed `/en-US/` from the map |
+  | news.ycombinator.com | 60 | 1 | 50 | 7 links correctly kept as EXTERNAL |
+  | docs.python.org | 60 | 1 | 50 | `/3/library/pathlib.html` → `/:id/library/pathlib.html` |
+  | us.posthog.com (signed in) | 50 | 1 | 37 | `/project/400792/home` → `/project/:id/home` |
+  | search.google.com | 31 | 1 | 24 | landed on the signed-OUT page; the session has expired |
+
+  **Bug 1, and the worst of them — older than this phase.** `href_path` throws the host away,
+  and `Element.locators()` built its `structural` locator from the result. GitHub writes its
+  own navigation absolutely, so the locator read `href=/pricing` while the DOM attribute said
+  `https://github.com/pricing` — a locator that could never match the element it was made
+  from. Every trail on such a site has been carrying one that silently missed; invisible
+  because the other eight locators covered for it. Fixed with `link_target`, which keeps the
+  host and still strips the query and fragment. `href_path` is untouched, because
+  postconditions genuinely do want the bare path.
+
+  **Bug 2.** The same stripping turned every EXTERNAL link into a fake page of the current
+  site. On Hacker News, where every story points somewhere else, the map was recording other
+  people's websites as pages of news.ycombinator.com. Same fix.
+
+  **Bug 3.** PyPI answered the automated browser with a bot challenge page — title "Client
+  Challenge", zero controls — under the real URL. The map recorded it as the project page.
+  Pages with no controls are no longer recorded at all: nothing worth remembering, and
+  remembering it would tell a later run this page is empty. (Our captcha markers do not catch
+  this style of challenge. Noted, not chased.)
+
+  **Bug 4.** Every real site opens with a screen-reader "Skip to content" link. Its target is
+  a fragment, not a place, so the map was offering an AI somewhere to go that is where it
+  already is. Fragment-only targets are no longer recorded as destinations — the control is
+  still kept, because a site can hang `href="#"` on a button worth pressing.
+
+  **Bug 5, mine.** The size-guard test built its pages as `/section/0/overview` … which all
+  normalise to `/section/:id/overview`. It was measuring ONE page and calling it a full map.
+  It now asserts the page count first, so it can never go hollow again quietly.
+
+  **The caps were wrong, and now they are measured.** 30 controls per page was set blind;
+  GitHub offers over 60 and keeping 30 meant keeping the global header and almost nothing
+  belonging to the page. Raised to 50. A genuinely full map then measured 228 KB, which is a
+  lot of a 5 MB database to spend on one site, so pages came down 60 → 40. Ids collapse, so
+  forty DISTINCT pages is a large application.
+
+  **What did NOT break:** `use` strings resolve on real signed-in apps. On PostHog
+  `role=link|Skip to content` found the real anchor; on Search Console `role=link|Start now`
+  found the real one. Both then failed to CLICK, because the element sits outside the
+  viewport and Playwright will not click what it cannot bring into view. That is the browsing
+  layer and it is pre-existing — the map's half worked.
+
+  **Two things for Rohit:** the Search Console session has expired and needs `cairn login`
+  again; and `/3/library/...` collapsing to `/:id/library/...` is the id rule being eager on
+  a version number. Left alone deliberately — being less eager would break the case the rule
+  exists for, where `/requests/1` … `/requests/900` would otherwise fill the map.
+
+  Both packages bumped to **0.2.0**, and `cairn-browser-mcp` now floors its dependency at
+  `cairn-browser>=0.2.0`: `cairn_map` calls `store.load_site_map`, which 0.1.0 does not have,
+  so an unpinned resolve could pair a new server with an old engine and fail on a user's
+  first call.

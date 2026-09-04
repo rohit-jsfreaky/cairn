@@ -121,6 +121,23 @@ class TestTheDeletionGate:
         assert result.ok is True
         assert result.metrics.steps_replayed == 6
 
+    def test_the_map_of_the_site_goes_too(
+        self, learned_site: str, store: CairnStore, browser: Browser, demo_server: str
+    ):
+        """Cairn also remembers the pages it looked at on the way, not just the route.
+
+        That memory has to fall to the same command. A judge who deletes the memory and
+        finds Cairn still knows the site's shape — its pages, its buttons — has found a
+        gate that does not hold, whatever the trail says.
+        """
+        walked = store.load_site_map(learned_site)
+        assert walked is not None and not walked.is_empty, "the walk should have been mapped"
+
+        store.forget_site(learned_site)
+
+        assert store.load_site_map(learned_site) is None
+        assert learned_site not in store.mapped_sites()
+
     def test_forgetting_one_site_leaves_the_others_alone(
         self, learned_site: str, store: CairnStore, demo_server: str
     ):

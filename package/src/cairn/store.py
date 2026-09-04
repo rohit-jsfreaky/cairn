@@ -30,7 +30,7 @@ from typing import Any
 
 from sibyl_memory_client import DEFAULT_TENANT, MemoryClient, NotFoundError
 
-from .models import Playbook, RunMetrics, SiteKnowledge, utc_now
+from .models import Playbook, RunMetrics, SiteKnowledge, SiteMap, utc_now
 
 PLAYBOOK = "playbook"
 
@@ -53,6 +53,11 @@ SHARED = "shared_playbook"
 
 # What an agent with no name is called when it leaves a trail for somebody else.
 UNNAMED = "default"
+
+# What Cairn saw while walking a site: the pages it looked at and what was on them.
+# Keyed by the bare domain, exactly like site knowledge, so that forgetting a site stays
+# one line rather than a second key-scanning loop.
+SITE_MAP = "site_map"
 
 # A site this agent was deliberately told to forget. The commons will not offer it
 # back without being asked a second time, on purpose.
@@ -80,7 +85,12 @@ MAX_SLUG = 60
 MAX_LISTED = 5000
 
 # How many payment receipts one offer keeps. A seller wants to know a trail earns its
-# keep, not to hold a full accounts ledger — and Sibyl caps an entity body at 1 MiB.
+# keep, not to hold a full accounts ledger.
+#
+# Sibyl has no per-entity cap. What it has is a soft cap on the whole DATABASE — 5 MB on
+# the free tier — and a search index that roughly doubles every body it stores. So the
+# error a runaway body causes is database-wide: it stops trails, knowledge and the commons
+# being written too. That is why anything here that grows per use carries a named limit.
 MAX_RECEIPTS = 50
 
 # How much of a request's wording must be shared with a saved task before they are treated
@@ -326,6 +336,12 @@ class CairnStore:
 
         knowledge = self.load_site_knowledge(domain)
         publishable = knowledge.for_sharing() if knowledge else None
+        # The shape of the site travels too. A trail is one route; the map is every page
+        # this agent has looked at, which is what makes a BORROWED trail worth more than
+        # the one task it replays — the borrower can go somewhere new on the same site
+        # without walking it blind first.
+        walked = self.load_site_map(domain)
+        publishable_map = walked.for_sharing() if walked else None
         offer = {
             "domain": domain,
             "task": playbook.task,
@@ -333,6 +349,7 @@ class CairnStore:
             "shared_at": utc_now(),
             "playbook": playbook.for_sharing(self.agent).to_dict(),
             "site_knowledge": publishable.to_dict() if publishable else None,
+            "site_map": publishable_map.to_dict() if publishable_map else None,
             "borrows": 0,
             "confirmed_by": [],
             "failed_for": [],
@@ -359,6 +376,9 @@ class CairnStore:
             "shared_by": self.who,
             "steps": len(playbook.steps),
             "notes_published": publishable.notes if publishable else [],
+            "pages_published": [page.path for page in publishable_map.pages]
+            if publishable_map
+            else [],
             "values_withheld": [
                 step.intent for step in playbook.steps if step.action in ("fill", "type")
             ],
@@ -594,6 +614,7 @@ class CairnStore:
         )
         self.save_playbook(taken)
         self._take_their_notes(offer)
+        self._take_their_map(offer)
         return taken
 
     @property
@@ -635,6 +656,10 @@ class CairnStore:
             "shared_by": offer["shared_by"],
             "shared_at": offer.get("shared_at", ""),
             "steps": len(trail.get("steps", [])),
+            # How many pages of the site come with it — a number, never the pages. A
+            # browsing stranger should be able to see that a map is worth paying for
+            # without being handed it for nothing.
+            "pages_mapped": len((offer.get("site_map") or {}).get("pages", [])),
             "runs": trail.get("runs", 0),
             "borrows": offer.get("borrows", 0),
             "worked_for": len(offer.get("confirmed_by", [])),
@@ -668,6 +693,22 @@ class CairnStore:
             mine.merge(needs_login=theirs.needs_login or None, needs_2fa=theirs.needs_2fa or None)
         )
 
+    def _take_their_map(self, offer: dict[str, Any]) -> None:
+        """Fold a borrowed trail's map of the site into whatever this agent already knew.
+
+        Merged rather than replaced, exactly like the notes. Two agents who have walked
+        different corners of one site should end up knowing both corners, and neither
+        should be able to erase the other's by sharing later.
+        """
+        raw = offer.get("site_map")
+        if not raw:
+            return
+        theirs = SiteMap.from_dict(raw)
+        mine = self.load_site_map(theirs.domain) or SiteMap(domain=theirs.domain)
+        for page in theirs.pages:
+            mine.merge(url=page.path, title=page.title, controls=page.controls)
+        self.save_site_map(mine)
+
     def _both_journals(self, **event: Any) -> None:
         """COLD write, twice: this agent's own history, and the shared one.
 
@@ -686,6 +727,31 @@ class CairnStore:
     def load_site_knowledge(self, domain: str) -> SiteKnowledge | None:
         body = self._read_entity_body(SITE_KNOWLEDGE, domain)
         return SiteKnowledge.from_dict(body) if body else None
+
+    # ------------------------------------------------------------------ the map
+
+    def save_site_map(self, site_map: SiteMap) -> None:
+        """WARM write. The pages Cairn has looked at on one site, and what was on them.
+
+        Separate from the playbook on purpose: a trail is one route, and this is the
+        terrain. A second task on the same site reads this instead of exploring blind,
+        which is the whole reason it exists.
+        """
+        self._memory.set_entity(SITE_MAP, site_map.domain, site_map.to_dict())
+
+    def load_site_map(self, domain: str) -> SiteMap | None:
+        body = self._read_entity_body(SITE_MAP, domain)
+        return SiteMap.from_dict(body) if body else None
+
+    def mapped_sites(self) -> list[str]:
+        """Every site with a map, including ones no trail was ever saved for.
+
+        `list_sites` reads the playbook category alone, so a site that was explored and
+        then abandoned would be invisible while Cairn still held its shape. Memory that
+        exists but cannot be seen is indistinguishable from memory that does not.
+        """
+        found = self._memory.list_entities(category=SITE_MAP, limit=MAX_LISTED)
+        return sorted({entity["name"] for entity in found if not self._is_archived(entity)})
 
     # ------------------------------------------------------------ cold journal
 
@@ -769,7 +835,7 @@ class CairnStore:
             except NotFoundError:
                 continue
 
-        for category in (PLAYBOOK, SITE_KNOWLEDGE):
+        for category in (PLAYBOOK, SITE_KNOWLEDGE, SITE_MAP):
             try:
                 self._memory.archive_entity(category, domain, reason="cairn forget")
                 forgotten = True

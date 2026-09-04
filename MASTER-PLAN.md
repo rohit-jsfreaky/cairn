@@ -149,6 +149,32 @@ funded wallet.** Everything up to the signature is verified — a live shop answ
 `HTTP/1.1 402 Payment Required`, the challenge naming Base Sepolia and the real USDC
 contract, and a purchase attempt that reached the facilitator and failed only on funds.
 
+## Phase 6b — The map · Sep 4-6 · `package/` + `mcp/` → `package/PLAN.md`
+
+**Why this exists.** Rohit put Cairn on a real client marketplace — vendor, customer and
+admin, many pages each — to drive its end-to-end tests, and found the flaw: on the first
+run Cairn and Playwright cost the same, because Cairn's memory was keyed by (site, task)
+and every new task was a stranger on a site it had already walked.
+
+His words for it: walking to the requests page to submit a request meant SEEING the list,
+the view button and the other six sidebar items, and binning all of it.
+
+So Cairn now keeps a map of the site, not only the trails through it. End-to-end testing is
+many tasks on ONE site — the workload Cairn is best placed to own, and the one it served
+worst.
+
+**FINISH LINE (all five):**
+1. A new task on a site Cairn already knows starts with a map, not a blank page.
+2. `cairn forget --site X` wipes the map with everything else, proved in the gate test.
+3. Building the map costs zero extra page reads and zero extra model calls; warm replay is
+   still one call.
+4. The map cannot grow without bound — proved by a test, not by a comment.
+5. A measured number: task 2 on a known site costs fewer page reads with the map than
+   without.
+
+**Safety rule.** `main` is already a complete submission. If this is not finished and green
+by the evening of Sep 6, it is dropped whole.
+
 ## Phase 6 — Harden + ship · Sep 8–10 · root
 
 - Run EVERYTHING 5×. Kill every flake. A stranger following the README succeeds first try.

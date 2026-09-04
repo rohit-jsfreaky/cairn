@@ -92,16 +92,29 @@ Measured on the demo site in this repo — run `python package/benchmark.py` you
 
 ```
                 time  tool calls  page reads  model calls
-Monday          0.8s           9           3            0   learning the site
+Monday          0.7s           9           3            0   learning the site
 Tuesday         0.4s           1           0            0   from memory
-Wednesday       0.4s           1           0            0   from memory
-Thursday        6.4s           3           0            0   the site changed, one step repaired
-Friday          0.5s           1           0            0   from memory
+Wednesday       0.3s           1           0            0   from memory
+Thursday       12.3s           3           0            0   the site changed, one step repaired
+Friday          0.3s           1           0            0   from memory
 ```
 
 The clock is the least interesting column. This benchmark has no model thinking in it, and
 thinking time is what memory actually removes. **Nine tool calls became one. Three page reads
 became none.**
+
+Then a **different** task on the same site — nothing replayed, all three exploring from
+scratch. The only difference is what Cairn had already seen:
+
+```
+                time  tool calls  page reads  model calls
+blind           0.6s          10           3            0   the way it worked before the map
+with map        0.3s           8           1            0   pages Cairn had already walked
+once more       0.3s           7           0            0   and now that page is mapped too
+```
+
+This is the number that matters if you have many tasks on one site. Task one is still a first
+visit. Task two is not, and neither is anything after it.
 
 ### What is actually stored
 
@@ -115,6 +128,46 @@ Not a recording, and not notes. Each step keeps:
 
 The checks are the difference between this and a macro recorder. A recorder clicks and hopes.
 Cairn notices when a click did nothing, and says the site changed.
+
+### The map: what it saw on the way
+
+A trail is one route. A site is bigger than one route, and most of what an agent needs is
+somewhere else on it.
+
+So Cairn also keeps a **map**: every page it has actually looked at, and what was on it. That
+costs nothing — the page had already been read, and Cairn was throwing it away.
+
+```bash
+cairn map github.com                       # every page it has seen
+cairn map github.com --path /issues        # the controls that were on one of them
+```
+
+This is the difference between the first task and the second on the same site. Ask for
+something new on a site Cairn has walked, and your AI is handed the pages it already knows
+before it starts hunting:
+
+```json
+{ "known": true, "needs_task": true,
+  "pages_known": [
+    { "path": "/vendor/requests", "title": "Requests", "controls": 14, "seen": "2 hours ago" },
+    { "path": "/vendor/reports",  "title": "Reports",  "controls": 9,  "seen": "2 hours ago" } ] }
+```
+
+And the map is not only a hint. Each control comes back with a `use` string —
+`role=button|Sign in`, `href=/settings` — which `cairn_act` takes directly as its `ref`. That
+is the difference between knowing a button is there and not having to read the page to press
+it. A page Cairn has already walked costs no reading at all.
+
+It matters most where one site carries many tasks — an end-to-end test suite, an admin
+console, a portal you work in every day. Test one is still a first visit. Tests two to fifty
+are not.
+
+Every page carries when it was seen, and Cairn says so out loud: this is what was there last
+time, not a promise about now. The same honesty as a locator, for the same reason.
+
+Ids are generalised, so `/invoices/2026-09` and `/invoices/2026-10` are one page rather than
+twelve. The map is capped and cannot grow without end. `cairn forget` takes it with
+everything else.
 
 ### When a site changes
 
@@ -144,8 +197,11 @@ cairn --agent bob run --site github.com --task "count open issues"   # one call
 Bob was never taught anything. He inherited a working, self-checking route and ran it on a site
 he had never seen.
 
-**What travels:** the steps, every ranked locator with the evidence it earned, the checks, and
-the hard-won notes about the site — *"the tab badge is cached, trust the Open count"*.
+**What travels:** the steps, every ranked locator with the evidence it earned, the checks, the
+hard-won notes about the site — *"the tab badge is cached, trust the Open count"* — and the
+**map**. Bob does not just inherit one route; he inherits the shape of the site, so his next
+task there is cheap too. Sharing tells you exactly which pages went, and `cairn map` shows
+their contents before you share.
 
 **What never travels:** anything typed into a field, and which account was used. A shared login
 step arrives asking *you* for your own credentials, resolved from your machine. Sharing tells
@@ -233,6 +289,7 @@ source. Memory is [Sibyl Memory](https://hack.sibyllabs.org), used across three 
 |---|---|
 | **warm** `playbook` | the route: steps, locators, checks, health |
 | **warm** `site_knowledge` | what survives a redesign — needs a login, sends a code, where the number really is |
+| **warm** `site_map` | every page it has looked at, and the controls that were on them |
 | **cold** `write_event` | every run, drift, repair, share, borrow and purchase, in order |
 
 Entities are unique per `(tenant, category, name)` at the schema level, so a site can never
@@ -259,6 +316,11 @@ changed site costs one repaired step instead of a fresh exploration: Cairn knows
 died and which still holds, because the outcome of every previous run is in memory. Wipe it and
 there is nothing to repair *from* — only re-learning.
 
+**A second task on a known site is cheaper than the first.** Cairn keeps a map of every page
+it has looked at, so a new task starts from what is already known rather than from a blank
+page. This is memory doing work for a job it was never recorded for — the first task paid for
+it, every later one spends it. Delete the map and every task on a site is a first visit again.
+
 **Agents can hand routes to each other.** Identity is a Sibyl tenant, so one agent's memory is
 genuinely invisible to another. Sharing, borrowing, and buying a trail over x402 are all moves
 inside the memory layer — a copy from one tenant to the `cairn-commons` tenant and back. There
@@ -280,6 +342,10 @@ cairn forget --site github.com
 
 Cairn now has nothing to follow for that site and has to learn it again. That is the point:
 **the memory is load-bearing, not a cache in front of something that works anyway.**
+
+That includes the map. A judge who deletes the memory and finds Cairn still knows the site's
+pages has found a gate that does not hold, so `cairn map` comes back empty too — there is a
+test for exactly that in `package/tests/test_deletion_gate.py`.
 
 Forgetting archives rather than deletes, and it is honest about its edges:
 
@@ -321,6 +387,9 @@ choice is the most fragile part of an agent's day.
 type, clear, press, check, uncheck, set_checked, select, upload, scroll_to, drag, focus, blur,
 tap, select_text, dispatch_event, goto, back, forward, reload, scroll, wait_for, new_tab,
 switch_tab, dismiss_when_seen, set_time, screenshot, evaluate, and more.
+
+**`cairn_map(site, path?)`** — what Cairn already saw on a site: the pages, then the controls
+on any one of them. Read from memory, so it costs no page load.
 
 **`cairn_read(kind, ref?)`** — 14 kinds: the control list, text, all_text, value, checked,
 visible, enabled, editable, attribute, count, url, title, console errors, failed requests.

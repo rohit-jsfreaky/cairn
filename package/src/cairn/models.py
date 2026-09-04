@@ -10,10 +10,11 @@ Nothing in this module talks to memory. That is `store.py`, and only `store.py`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 LocatorKind = Literal[
     "test_id",
@@ -38,6 +39,40 @@ MIN_STEPS_TO_JUDGE_STALE = 3
 # How much a single confirmed hit or miss moves a locator's health.
 _HIT_WEIGHT = 1.0
 _MISS_WEIGHT = 2.0  # a miss is worse news than a hit is good news
+
+# --- the map -------------------------------------------------------------------------
+#
+# A map grows every time Cairn looks at a page, so it is the one shape here that could
+# grow without end. That matters more than it looks: Sibyl's free tier caps the whole
+# DATABASE at 5 MB, its search index roughly doubles every body, and the resulting error
+# is database-wide. An unbounded map would not just spoil itself — it would stop trails,
+# site knowledge and the commons from being written at all, mid-run. These two numbers
+# are the guard, and a test holds them.
+# Forty pages and fifty controls each measures at ~230 KB of JSON, and Sibyl's search
+# index roughly doubles that. Sixty pages was the first guess; it made one site cost
+# nearly half a megabyte, which is a lot to spend on one site inside a 5 MB database.
+# Ids collapse to `:id`, so forty DISTINCT pages is a large application, not a small one.
+MAX_PAGES_PER_SITE = 40
+# Raised from 30 after the first real site. GitHub's repository page offers well over
+# sixty controls, and keeping thirty meant keeping the global header and almost nothing
+# belonging to the page itself — a map made of chrome. Document order is still what
+# survives, because a site's own navigation comes first on nearly every page.
+MAX_CONTROLS_PER_PAGE = 50
+
+# Long enough for a person to recognise the page, short enough that sixty of them cost
+# nothing. Element names are already cut to 80 by the snapshot, so this matches.
+MAX_TITLE = 80
+
+# Path segments that are an identity rather than a place. Without these the map fills up
+# with /requests/1, /requests/2, /requests/3 and learns nothing from any of them.
+# Anything that is only digits and separators: 1234, 2026-09, 2024-01-15, 12_34. Real
+# sites key on dates and periods as often as on numbers, and `/invoices/2026-09` is one
+# page visited twelve times a year, not twelve pages. A segment with a letter in it is
+# left alone, so `v2` and `requests` survive.
+_ALL_DIGITS = re.compile(r"^(?=.*\d)[\d\-_.]+$")
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+_LONG_HEX = re.compile(r"^[0-9a-f]{16,}$", re.I)  # Mongo-style ids and hashes
+_ID_MARKER = ":id"
 
 
 def _field_name(intent: str) -> str:
@@ -66,6 +101,52 @@ def href_path(href: str) -> str:
     """
     parsed = urlparse(href)
     return parsed.path or href
+
+
+def link_target(href: str) -> str:
+    """Where a link points, in the form the page itself wrote it.
+
+    Query strings and fragments still go — those carry session ids and tracking, and the
+    demo site hangs `?variant=` off every link. The HOST stays, which `href_path` throws
+    away, and that difference is a real bug this fixed: GitHub writes its own nav links
+    absolutely, so a locator built from the stripped path — `[href="/pricing"]` — could
+    never match `href="https://github.com/pricing"` and silently missed every time.
+
+    It matters twice over for the map: without the host, a link to another site is
+    recorded as though it were a page of this one.
+    """
+    parsed = urlparse(href)
+    if parsed.scheme or parsed.netloc:
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    return parsed.path or href
+
+
+def page_path(url: str) -> str:
+    """The identity of a page, as a place rather than one visit to it.
+
+    `/requests/1234/edit?tab=notes` is the same PAGE as `/requests/5678/edit`. Keeping them
+    apart would fill the map with a hundred copies of one screen and teach it nothing, so a
+    segment that is plainly an identity — digits, a uuid, a long hash, an email address —
+    becomes `:id`.
+
+    The email rule earns its place twice: it stops `/users/someone@example.com/settings`
+    multiplying, and it keeps a person's address out of a map that can now be shared.
+    """
+    path = urlparse(url).path or "/"
+    segments = [_generalise(segment) for segment in path.split("/")]
+    joined = "/".join(segments)
+    return joined if joined.startswith("/") else f"/{joined}"
+
+
+def _generalise(segment: str) -> str:
+    """One path segment: itself, or `:id` if it names a particular thing."""
+    if not segment:
+        return segment
+    if "@" in segment:
+        return _ID_MARKER
+    if _ALL_DIGITS.match(segment) or _UUID.match(segment) or _LONG_HEX.match(segment):
+        return _ID_MARKER
+    return segment
 
 
 def _confidence(hits: int, misses: int) -> float:
@@ -585,6 +666,294 @@ class SiteKnowledge:
             needs_2fa=raw.get("needs_2fa", False),
             account_hint=raw.get("account_hint"),
             overlays=list(raw.get("overlays", [])),
+            updated_at=raw.get("updated_at", utc_now()),
+        )
+
+
+def _ago(when: str) -> str:
+    """How long ago, in words.
+
+    Everything in a map is something Cairn saw ONCE, at a moment that has passed. Handing
+    it back without saying when would be presenting a memory as the present tense, which is
+    the one thing a map must never do.
+    """
+    try:
+        then = datetime.fromisoformat(when)
+    except ValueError:
+        return "at some point"
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=UTC)
+    seconds = (datetime.now(UTC) - then).total_seconds()
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} minutes ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)} hours ago"
+    return f"{int(seconds // 86400)} days ago"
+
+
+@dataclass
+class Control:
+    """One thing on a page that could be acted on, as the map remembers it.
+
+    Deliberately NOT a `Locator`. A locator belongs to a step and carries a track record of
+    replaying that step. This is the weaker thing: proof that a control with this name was
+    on this page when Cairn last looked. It is a starting point for exploring, never
+    something replay trusts.
+
+    There is no `ref` here, on purpose. A ref is only meaningful inside the snapshot that
+    produced it, so storing one would hand a later run an address for a page that no longer
+    exists.
+    """
+
+    role: str
+    name: str
+    href: str | None = None
+    last_seen: str = field(default_factory=utc_now)
+
+    @property
+    def identity(self) -> tuple[str, str]:
+        """What makes two sightings the same control. Role and name, never position."""
+        return (self.role, self.name)
+
+    def describe(self) -> str:
+        """One line, for a person or an AI reading the map."""
+        return f"{self.role} {self.name!r}" + (f" -> {self.href}" if self.href else "")
+
+
+@dataclass
+class PageMemory:
+    """One page Cairn has actually looked at, and what was on it.
+
+    Only pages that were genuinely examined get in here. Cairn does not crawl, and a page
+    nobody looked at has nothing worth remembering about it.
+    """
+
+    path: str
+    title: str = ""
+    controls: list[Control] = field(default_factory=list)
+    first_seen: str = field(default_factory=utc_now)
+    last_seen: str = field(default_factory=utc_now)
+
+    def merge_controls(self, seen: list[Control]) -> PageMemory:
+        """Add this visit's controls to what was already known. Never replaces.
+
+        This is what makes one map per site work when a site shows different things to
+        different logins. An admin sees twelve sidebar items where a customer saw seven;
+        the union is kept, and each control remembers when it was last actually there. No
+        role is modelled anywhere — the timestamps carry that information honestly, and
+        nothing has to be declared by the caller and got right.
+        """
+        known = {control.identity: control for control in self.controls}
+        for fresh in seen:
+            already = known.get(fresh.identity)
+            if already is None:
+                self.controls.append(fresh)
+                known[fresh.identity] = fresh
+                continue
+            already.last_seen = fresh.last_seen
+            if fresh.href:
+                already.href = fresh.href
+        self._trim_controls()
+        self.last_seen = utc_now()
+        return self
+
+    def _trim_controls(self) -> None:
+        """Stay under the cap by dropping what has not been seen for longest.
+
+        Document order is kept for everything that survives, because that order puts a
+        site's navigation first on nearly every page, and the navigation is the most useful
+        part of a map.
+        """
+        if len(self.controls) <= MAX_CONTROLS_PER_PAGE:
+            return
+        survivors = sorted(self.controls, key=lambda control: control.last_seen, reverse=True)
+        keep = {id(control) for control in survivors[:MAX_CONTROLS_PER_PAGE]}
+        self.controls = [control for control in self.controls if id(control) in keep]
+
+    def describe(self) -> str:
+        """One line for the index: where it is, what it is called, how much is known."""
+        named = f" — {self.title}" if self.title else ""
+        return f"{self.path}{named} — {len(self.controls)} controls, seen {_ago(self.last_seen)}"
+
+    def to_dict(self) -> dict[str, Any]:
+        # A control's own `last_seen` is written only when it differs from the page's,
+        # which is the rare case: almost every control is seen on the same visit as the
+        # page it sits on. Sixty pages of repeated timestamps would be a third of the map's
+        # size spent saying nothing.
+        return {
+            "path": self.path,
+            "title": self.title,
+            "first_seen": self.first_seen,
+            "last_seen": self.last_seen,
+            "controls": [
+                {
+                    "role": control.role,
+                    "name": control.name,
+                    **({"href": control.href} if control.href else {}),
+                    **(
+                        {"last_seen": control.last_seen}
+                        if control.last_seen != self.last_seen
+                        else {}
+                    ),
+                }
+                for control in self.controls
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> PageMemory:
+        last_seen = raw.get("last_seen", utc_now())
+        return cls(
+            path=raw["path"],
+            title=raw.get("title", ""),
+            controls=[
+                Control(
+                    role=control["role"],
+                    name=control["name"],
+                    href=control.get("href"),
+                    last_seen=control.get("last_seen", last_seen),
+                )
+                for control in raw.get("controls", [])
+            ],
+            first_seen=raw.get("first_seen", last_seen),
+            last_seen=last_seen,
+        )
+
+
+@dataclass
+class SiteMap:
+    """Every page Cairn has looked at on one site.
+
+    A trail is a route to one destination. This is the terrain around it — the thing a
+    person picks up by walking somewhere once and paying attention on the way.
+
+    It exists because Cairn's memory used to be keyed by (site, task) alone, so a second
+    task on a site walked twenty times still started blind. Everything seen while doing the
+    first task was thrown away. This is where it goes instead.
+
+    Nothing here is ever presented as current. Each page carries when it was last seen, and
+    the caller is told to verify as it goes, exactly as it would with a locator.
+    """
+
+    domain: str
+    pages: list[PageMemory] = field(default_factory=list)
+    updated_at: str = field(default_factory=utc_now)
+
+    def page(self, path: str) -> PageMemory | None:
+        """What is known about one page, or nothing."""
+        wanted = page_path(path)
+        return next((page for page in self.pages if page.path == wanted), None)
+
+    def merge(
+        self,
+        *,
+        url: str | None = None,
+        title: str | None = None,
+        controls: list[Control] | None = None,
+    ) -> SiteMap:
+        """Record one visit. Adds to what is known, never replaces it.
+
+        Same contract as `SiteKnowledge.merge`: keyword-only, mutates and returns self, so
+        several sightings from different visits accumulate instead of the last one winning.
+        """
+        if not url:
+            return self
+        path = page_path(url)
+        page = self.page(path)
+        if page is None:
+            page = PageMemory(path=path)
+            self.pages.append(page)
+        if title:
+            page.title = title.strip()[:MAX_TITLE]
+        page.merge_controls(controls or [])
+        self._trim_pages()
+        self.updated_at = utc_now()
+        return self
+
+    def _trim_pages(self) -> None:
+        """Stay under the cap by forgetting the pages nobody has been back to."""
+        if len(self.pages) <= MAX_PAGES_PER_SITE:
+            return
+        self.pages.sort(key=lambda page: page.last_seen, reverse=True)
+        del self.pages[MAX_PAGES_PER_SITE:]
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.pages
+
+    def index(self) -> list[dict[str, Any]]:
+        """The table of contents, newest first.
+
+        The index goes out; the detail is fetched a page at a time. A forty-page map
+        cannot travel inside every reply, and most of it is not relevant to any one task.
+        """
+        return [
+            {
+                "path": page.path,
+                "title": page.title,
+                "controls": len(page.controls),
+                "last_seen": page.last_seen,
+                "seen": _ago(page.last_seen),
+            }
+            for page in self._newest_first()
+        ]
+
+    def summary(self) -> list[str]:
+        """The index as plain lines, for an AI or a person about to walk this site."""
+        return [page.describe() for page in self._newest_first()]
+
+    def _newest_first(self) -> list[PageMemory]:
+        """Most recently seen first, with visit order breaking a tie.
+
+        Timestamps are stored to the second, so two pages looked at in the same second
+        carry the same one. Position is the honest tie-break: pages are appended in the
+        order they were first walked, so the later one really was the later one.
+        """
+        ordered = sorted(
+            enumerate(self.pages), key=lambda pair: (pair[1].last_seen, pair[0]), reverse=True
+        )
+        return [page for _, page in ordered]
+
+    def for_sharing(self) -> SiteMap:
+        """What is safe to hand another agent.
+
+        The shape of a site is the valuable part and it travels whole. Paths have already
+        had identities generalised away by `page_path`. The one extra cut here is a control
+        whose NAME carries an email address — a signed-in header reading "someone@work.com"
+        is a real thing on real sites, and it belongs to a person rather than to the site.
+
+        Whoever shares this can read exactly what will go out first, with `cairn map`.
+        """
+        return SiteMap(
+            domain=self.domain,
+            pages=[
+                PageMemory(
+                    path=page.path,
+                    title=page.title,
+                    controls=[
+                        replace(control) for control in page.controls if "@" not in control.name
+                    ],
+                    first_seen=page.first_seen,
+                    last_seen=page.last_seen,
+                )
+                for page in self.pages
+            ],
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "domain": self.domain,
+            "pages": [page.to_dict() for page in self.pages],
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> SiteMap:
+        return cls(
+            domain=raw["domain"],
+            pages=[PageMemory.from_dict(page) for page in raw.get("pages", [])],
             updated_at=raw.get("updated_at", utc_now()),
         )
 

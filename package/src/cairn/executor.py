@@ -46,8 +46,8 @@ from .events import (
     StepPassed,
     StepStarted,
 )
-from .models import Locator, Playbook, Postcondition, RunMetrics, Step, href_path
-from .operations import READ_ACTION, check_postcondition
+from .models import Locator, Playbook, Postcondition, RunMetrics, SiteMap, Step, href_path
+from .operations import READ_ACTION, check_postcondition, controls_in
 from .secrets import MissingSecret
 from .secrets import resolve as resolve_secret
 from .store import CairnStore
@@ -570,6 +570,7 @@ class Executor:
         good for one snapshot only — so the durable descriptors have to travel with it.
         """
         snapshot = self.browser.snapshot()
+        self._remember_page(playbook.domain, snapshot)
         return RepairRequest(
             domain=playbook.domain,
             step_index=step.index,
@@ -578,6 +579,32 @@ class Executor:
             tried=tried,
             url=snapshot.url,
             candidates=[self.browser.describe(element).to_dict() for element in snapshot.elements],
+        )
+
+    def _remember_page(self, domain: str, snapshot: Any) -> None:
+        """Keep the page this snapshot came from in the site's map.
+
+        The only place the warm path touches the map, and deliberately so. Replay reads no
+        pages at all — that is the whole claim — so there is normally no snapshot to keep.
+        A broken step is the exception: one has just been built to describe the candidates,
+        it is free, and it is taken at exactly the moment the page is KNOWN to have moved,
+        which is when a stale map is worth correcting.
+
+        Never allowed to break a run, for the same reason as on the cold path.
+        """
+        try:
+            site_map = self.store.load_site_map(domain) or SiteMap(domain=domain)
+            self.store.save_site_map(
+                site_map.merge(
+                    url=snapshot.url,
+                    title=snapshot.title,
+                    controls=controls_in(snapshot),
+                )
+            )
+        except Exception:  # noqa: BLE001 - a note must never fail the task
+            return
+        self.events.emit(
+            MemoryWrite(category="site_map", name=domain, detail=f"{snapshot.url} after drift")
         )
 
     def repair_from_ref(

@@ -98,11 +98,15 @@ def page(title: str, body: str, *, variant: str, nav: bool = True) -> HTMLRespon
     # Variant B renames the section in the nav as well, so a text locator on the nav
     # has to cope too. The href does not change.
     invoices_label = "Invoices" if variant == "a" else "Billing"
+    # Payments and Settings used to be decoration — both pointed back at /invoices. They
+    # are real pages now, because a site with one destination cannot show what the map is
+    # for. A second task on a DIFFERENT page of a site already walked is the whole point,
+    # and it needs a second page to be walked to.
     nav_html = (
         f"""<nav>
               <a href="{link("/invoices", variant)}" class="active">{invoices_label}</a>
-              <a href="{link("/invoices", variant)}">Payments</a>
-              <a href="{link("/invoices", variant)}">Settings</a>
+              <a href="{link("/payments", variant)}">Payments</a>
+              <a href="{link("/settings", variant)}">Settings</a>
             </nav>"""
         if nav
         else ""
@@ -112,6 +116,44 @@ def page(title: str, body: str, *, variant: str, nav: bool = True) -> HTMLRespon
 <html lang="en"><head><meta charset="utf-8">
 <title>{title} · Acme Billing</title><style>{STYLE}</style></head>
 <body><main>{nav_html}{body}</main></body></html>"""
+    )
+
+
+@app.get("/payments", response_class=HTMLResponse)
+def payments(request: Request, variant: str | None = Query(None)) -> HTMLResponse:
+    """A second destination, reachable from the nav on every signed-in page."""
+    v = variant_of(request, variant)
+    return page(
+        "Payments",
+        """<h1>Payments</h1>
+           <p class="sub">How this account pays</p>
+           <ul class="rows">
+             <li class="row"><span>Card on file</span>
+                 <span class="amount" id="card">Visa ending 4242</span></li>
+             <li class="row"><span>Next charge</span>
+                 <span class="amount" id="next-charge">&#8377; 18,400</span></li>
+             <li class="row"><span>Billing cycle</span>
+                 <span class="amount" id="cycle">Monthly</span></li>
+           </ul>
+           <div class="toolbar"><a class="btn" id="change-card" href="#">Change card</a></div>""",
+        variant=v,
+    )
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings(request: Request, variant: str | None = Query(None)) -> HTMLResponse:
+    """A third destination. Nothing clever — it exists so the site has a shape."""
+    v = variant_of(request, variant)
+    return page(
+        "Settings",
+        """<h1>Settings</h1>
+           <p class="sub">Who hears about invoices</p>
+           <form>
+             <label for="billing-email">Billing email</label>
+             <input id="billing-email" name="billing-email" value="finance@acme.com">
+             <button type="submit">Save changes</button>
+           </form>""",
+        variant=v,
     )
 
 

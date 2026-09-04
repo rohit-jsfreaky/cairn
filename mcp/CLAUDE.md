@@ -46,6 +46,7 @@ exist without being discoverable.
 | `cairn_run(task, site)` | replay the playbook deterministically; repairs a broken step by asking the host AI only for that step |
 | `cairn_sites()` | learned sites + playbook health |
 | `cairn_show(domain)` | the playbook, human-readable |
+| `cairn_map(site, path?)` | the pages Cairn has looked at, then the controls on one — each with a `use` string that `cairn_act` takes as a `ref`, so a known page costs no reading |
 | `cairn_forget(domain)` | wipe a site's memory — the gate test, from inside any MCP client |
 
 Tool descriptions ARE the UX — the host AI decides what to call from them alone. One dedicated

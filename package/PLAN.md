@@ -160,3 +160,22 @@ The coordination half of the 40% line. `search_similar` is already built and unu
 - Flow: agent B hits an unknown site → `search_similar` shows agent A knows it → pays via x402
   (Base Sepolia, public facilitator, Circle-faucet USDC) → imports the playbook → runs warm.
 - Demo proof: the transaction visible on the Base Sepolia explorer, on camera.
+
+## Phase 6b - the map (Sep 4-6)
+
+Cairn remembered the destination and threw away the road. Its memory was keyed by
+(site, task), so a second task on a site already walked twenty times started blind —
+found by Rohit driving end-to-end tests on a real client marketplace, where the first
+run cost the same as plain Playwright.
+
+- `SiteMap` / `PageMemory` / `Control` in `models.py`, keyed by a normalised path so
+  `/invoices/2026-09` and `/invoices/2026-10` are one page, not two.
+- Recorded from `Session.look()` alone: that snapshot is already built and already paid
+  for. Zero extra page reads, zero extra model calls, zero extra time.
+- Caps with a test behind them. Sibyl's limit is on the whole DATABASE, so a runaway map
+  would stop trails and the commons being written too.
+- `cairn forget` takes the map with everything else. Tested in `test_deletion_gate.py`.
+- Served back as index-then-detail: `cairn_run` returns `pages_known` on every branch
+  where the AI is about to explore, and `cairn_map` opens one page.
+- OK when: a new task on a known site starts from a map rather than a blank page, and
+  forgetting the site empties it.

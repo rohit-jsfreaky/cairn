@@ -36,6 +36,11 @@ from mcp.server.fastmcp import FastMCP
 # reading it is cheap — the whole point of the project is not paying for page dumps.
 MAX_ELEMENTS = 60
 
+# How many pages of the map travel in one cairn_run reply. The index is small per row, but
+# a site with sixty mapped pages would still be a wall of text in front of the instruction
+# that matters. The rest is a cairn_map call away.
+MAX_PAGES_LISTED = 25
+
 # `cairn_read(kind="page")` is not one of the engine's read kinds — it is the control list
 # rather than something read off a single element. It lives here because "what can I do on
 # this page" is a question about the tool surface, not about the DOM.
@@ -63,15 +68,21 @@ def _act_description() -> str:
         "known, and call cairn_save at the end so it never has to happen again.\n\n"
         "Start with `goto`. Then `cairn_read(kind='page')` to see what is there, which "
         "gives every control a `ref` to pass back here.\n\n"
+        "On a page Cairn has walked before you can SKIP that read: cairn_map gives each "
+        'control a `use` string such as "role=button|Sign in", and passing that as `ref` '
+        "acts on it directly. That is the saving — a page Cairn already knows costs no "
+        "reading at all.\n\n"
         "Actions:\n" + actions.catalogue() + "\n\n"
         "Args:\n"
         '  intent: why you are doing this, in plain words — "sign in", "open this '
         "month's invoice\". Stored in memory, and it is what a future repair is explained "
         "by, so write it for a human rather than as a selector.\n"
         "  action: one of the names above.\n"
-        "  ref: which element. Either a `ref` from cairn_read(kind='page'), or a "
-        "CSS selector you write yourself for something that has no ref. Not needed "
-        "for the page-level actions.\n"
+        "  ref: which element. Any of three things: a `ref` from "
+        "cairn_read(kind='page'); a `use` string from cairn_map, such as "
+        '"role=button|Sign in" or "href=/payments"; or a CSS selector you write '
+        "yourself for something that has no ref. Not needed for the page-level "
+        "actions.\n"
         "  value: the text, key, option, url or seconds the action needs.\n"
         "  to: the second control, for `drag`."
     )
@@ -114,6 +125,32 @@ def _facts_for(tools: CairnTools, domain: str) -> list[str]:
     """What Cairn still knows about a site, in plain sentences."""
     knowledge = tools.store.load_site_knowledge(domain)
     return knowledge.summary() if knowledge else []
+
+
+def _pages_for(tools: CairnTools, domain: str) -> list[dict[str, Any]]:
+    """The pages Cairn has already looked at on this site.
+
+    Handed over on every branch where the host AI is about to explore, because that is the
+    moment it would otherwise start hunting for a page Cairn has already stood on. The
+    index only — paths, titles, how many controls, how long ago. The controls themselves
+    are fetched one page at a time with cairn_map, since a whole map cannot travel inside
+    every reply and most of it is irrelevant to any one task.
+    """
+    site_map = tools.store.load_site_map(domain)
+    return site_map.index()[:MAX_PAGES_LISTED] if site_map else []
+
+
+def _explore_advice(pages: list[dict[str, Any]]) -> str:
+    """What to tell an AI that has a map, instead of letting it start from nothing."""
+    if not pages:
+        return ""
+    return (
+        f" Cairn has ALREADY looked at {len(pages)} page(s) on this site — they are in "
+        "`pages_known`, newest first. Start there rather than hunting: go straight to the "
+        "path that matches what you were asked for, and call cairn_map with that path to "
+        "see the controls that were on it. This is what Cairn saw LAST time, so verify as "
+        "you go — the site may have moved since."
+    )
 
 
 # Shops this agent may buy trails from, comma separated. Read only here and in
@@ -280,7 +317,7 @@ def build_server(
         has, the whole task finishes in this single call, with no page reading and no
         reasoning. If it has not, the result tells you exactly how to proceed.
 
-        Three possible answers:
+        The answers that matter:
           ok=True                  the task is done. `answers` holds what the trail
                                    read — report it and stop.
           needs_repair=True        the site changed. ONE step broke and is described in
@@ -288,6 +325,13 @@ def build_server(
                                    and call cairn_repair. Do not re-explore the whole site.
           known=False              Cairn has never been here. Explore with
                                    cairn_act and cairn_read, then cairn_save.
+          needs_task=True          the site is known but this task is not named yet. Use a
+                                   trail from `tasks` if one fits; otherwise it is a new
+                                   task on a familiar site.
+
+        Whenever you are about to explore, `pages_known` lists the pages Cairn has ALREADY
+        looked at on this site. Start from those instead of hunting, and use cairn_map to
+        see what was on one of them.
 
         Args:
             site: The site, as a domain or a full URL (e.g. "billing.acme.com").
@@ -304,21 +348,32 @@ def build_server(
         except NeedsTask as ambiguous:
             # NOT "unknown". Saying that made a host AI explore a site it already knew and
             # save over the trail that was there.
+            #
+            # This branch is also where a genuinely NEW task on a known site arrives, and
+            # the instruction used to end "Do NOT explore — the trail is already there",
+            # which is simply wrong when none of `tasks` is what was asked for. Now it says
+            # both halves: use a trail if one fits, and if none does, start from the map
+            # rather than from nothing.
+            pages = _pages_for(tools, key)
             return {
                 "ok": False,
                 "known": True,
                 "needs_task": True,
                 "site": key,
                 "tasks": ambiguous.tasks,
+                "pages_known": pages,
                 "message": str(ambiguous),
                 "next": (
-                    "Cairn already knows this site. Call cairn_run again with `task` set "
-                    "to whichever of `tasks` matches what was asked. Do NOT explore — the "
-                    "trail is already there."
+                    "Cairn already knows this site. If one of `tasks` is what you were "
+                    "asked for, call cairn_run again with `task` set to that exact "
+                    "wording and do NOT explore — the trail is already there. If none of "
+                    "them is, this is a NEW task on a site Cairn has walked before."
+                    + _explore_advice(pages)
                 ),
             }
         except NoTrailError as unknown:
             facts = _facts_for(tools, key)
+            pages = _pages_for(tools, key)
             offers = [] if tools.store.was_forgotten(key) else tools.store.offers_for(key)
 
             if offers:
@@ -330,6 +385,7 @@ def build_server(
                     "site": key,
                     "message": str(unknown),
                     "site_facts": facts,
+                    "pages_known": pages,
                     "shared_trails": offers,
                     "next": (
                         f"Do NOT explore. Another agent has already walked {key} and left "
@@ -346,6 +402,7 @@ def build_server(
                     "site": key,
                     "message": str(unknown),
                     "site_facts": facts,
+                    "pages_known": pages,
                     "was_forgotten": True,
                     "next": (
                         f"You told Cairn to forget {key}. Another agent may still have a "
@@ -362,6 +419,7 @@ def build_server(
                 "site": key,
                 "message": str(unknown),
                 "site_facts": facts,
+                "pages_known": pages,
                 "next": (
                     "Cairn has not walked this site. Explore it once with "
                     "cairn_act and cairn_read, then call cairn_save so this "
@@ -382,6 +440,7 @@ def build_server(
                         "remembering that is not a step, such as needing a login, a code "
                         "sent to a phone, or a limit on how often you may try."
                     )
+                    + _explore_advice(pages)
                 ),
             }
         except Exception as failure:  # noqa: BLE001 - reported, not raised at the client
@@ -418,6 +477,7 @@ def build_server(
             }
 
         if result.stale:
+            pages = _pages_for(tools, key)
             return {
                 "ok": False,
                 "known": False,
@@ -425,12 +485,13 @@ def build_server(
                 "site": key,
                 "message": result.reason,
                 "site_facts": result.site_facts,
+                "pages_known": pages,
                 "next": (
                     "The site was rebuilt, so the old trail was thrown away but everything "
                     "Cairn knows about the site was kept. Explore it again "
                     "with cairn_act and cairn_read — use site_facts so you "
                     "do not rediscover what is already known — then call "
-                    "cairn_save."
+                    "cairn_save." + _explore_advice(pages)
                 ),
             }
 
@@ -766,6 +827,90 @@ def build_server(
             "site": key,
             "playbook": playbook.to_dict(),
             "site_facts": facts,
+        }
+
+    @server.tool()
+    def cairn_map(site: str, path: str | None = None) -> dict[str, Any]:
+        """What Cairn already saw on a site: which pages, and what was on them.
+
+        Call this BEFORE exploring a site Cairn has walked before. cairn_run hands back
+        `pages_known` when a task is new; this is how you open one of those pages and see
+        the controls that were on it, without loading the page to find out.
+
+        That is the saving. A site is one site however many tasks you have on it, and
+        everything Cairn saw while doing the first task is here — the sidebar, the buttons,
+        the links — so a new task starts from a map instead of from nothing.
+
+        THIS IS WHAT CAIRN SAW LAST TIME, NOT WHAT IS THERE NOW. Every page says when it
+        was seen. Treat it the way you would treat directions from someone who walked the
+        route last month: go straight to the right place, then check.
+
+        Args:
+            site: Domain or full URL.
+            path: One page, e.g. "/vendor/requests". Leave it out for the list of pages.
+                Ids are generalised, so "/invoices/2026-09" is stored as "/invoices/:id".
+        """
+        key = domain_of(site) if "://" in site else site
+        site_map = tools.store.load_site_map(key)
+
+        if site_map is None or site_map.is_empty:
+            return {
+                "ok": False,
+                "known": False,
+                "site": key,
+                "message": f"Cairn has not looked at any page on {key} yet.",
+                "next": (
+                    "Explore with cairn_act and cairn_read. Every page you look at is "
+                    "recorded here automatically, so the next task on this site starts "
+                    "with a map."
+                ),
+            }
+
+        if path is None:
+            return {
+                "ok": True,
+                "site": key,
+                "pages": site_map.index()[:MAX_PAGES_LISTED],
+                "next": (
+                    "Call cairn_map again with `path` set to the page you want, to see the "
+                    "controls that were on it."
+                ),
+            }
+
+        page = site_map.page(path)
+        if page is None:
+            return {
+                "ok": False,
+                "site": key,
+                "message": f"Cairn has not looked at {path} on {key}.",
+                "pages": [row["path"] for row in site_map.index()][:MAX_PAGES_LISTED],
+                "next": "Pick one of `pages`, or explore this page and it will be recorded.",
+            }
+
+        return {
+            "ok": True,
+            "site": key,
+            "path": page.path,
+            "title": page.title,
+            "last_seen": page.last_seen,
+            "controls": [
+                {
+                    "role": control.role,
+                    "name": control.name,
+                    "href": control.href,
+                    # Pass this straight back as cairn_act's `ref`. Without it the map
+                    # would only ever be a hint: you would know the button is there and
+                    # still have to read the whole page to get a ref before pressing it.
+                    "use": f"role={control.role}|{control.name}",
+                }
+                for control in page.controls
+            ],
+            "next": (
+                "Act on these WITHOUT reading the page: pass a control's `use` string as "
+                "cairn_act's `ref`. That is the saving — this page costs no reading at "
+                "all. They were here when Cairn last looked, so if one does not resolve "
+                "the page has moved: call cairn_read(kind='page') and carry on from there."
+            ),
         }
 
     @server.tool()
