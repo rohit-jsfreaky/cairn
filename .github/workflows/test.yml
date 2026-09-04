@@ -49,13 +49,50 @@ jobs:
       - name: Install the browser
         run: python -m playwright install --with-deps chromium
 
+      # Failures are reported twice on purpose: once into the job summary a person reads,
+      # and once as ::error:: annotations. Downloading a run's log needs admin rights on
+      # the repository even when the repository is public, so a failure that only exists
+      # in the log is invisible to anyone without those rights — which cost a whole
+      # push-and-wait cycle to discover. Annotations are public.
       - name: Engine tests
         working-directory: package
-        run: python -m pytest -q
+        run: |
+          set +e
+          python -m pytest -q --tb=short -rf --maxfail=8 > pytest.log 2>&1
+          status=$?
+          cat pytest.log
+          if [ $status -ne 0 ]; then
+            {
+              echo "### Engine tests failed"
+              echo '```'
+              tail -n 150 pytest.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            grep -E '^(FAILED|ERROR)' pytest.log | head -25 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          exit $status
 
       - name: MCP tests
         working-directory: mcp
-        run: python -m pytest -q
+        run: |
+          set +e
+          python -m pytest -q --tb=short -rf --maxfail=8 > pytest.log 2>&1
+          status=$?
+          cat pytest.log
+          if [ $status -ne 0 ]; then
+            {
+              echo "### MCP tests failed"
+              echo '```'
+              tail -n 150 pytest.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            grep -E '^(FAILED|ERROR)' pytest.log | head -25 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          exit $status
 
   lint:
     name: ruff
