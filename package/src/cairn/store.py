@@ -238,29 +238,50 @@ class CairnStore:
             if body:
                 return Playbook.from_dict(body)
 
-        # Trails saved before trails were keyed by task are named by domain alone.
-        body = self._read_entity_body(PLAYBOOK, domain)
-        if body:
-            return Playbook.from_dict(body)
+        # Trails saved before trails were keyed by task are named by domain alone. Even a
+        # legacy trail has to be the one being asked for: returning it whatever the caller
+        # said is the "run the wrong task" accident this function exists to prevent.
+        legacy = self._read_entity_body(PLAYBOOK, domain)
+        if legacy and self._is_plausible(task, legacy, domain):
+            return Playbook.from_dict(legacy)
 
         keys = self._keys_for(domain)
 
-        # A caller who names no task can only mean the single one that exists. A caller who
-        # DOES name one has to be matched against it — otherwise a site holding "count open
-        # issues" would happily run that when asked to "cancel my subscription".
-        if len(keys) == 1 and not task:
-            body = self._read_entity_body(PLAYBOOK, keys[0])
-            return Playbook.from_dict(body) if body else None
+        # A site with ONE trail. Naming a task used to disable this fallback entirely, so
+        # `cairn_run(site)` replayed and `cairn_run(site, task="...")` did not — naming the
+        # task was strictly worse than staying silent, and the tool description tells the
+        # caller to name it. Measured cost: a real model gave up and re-explored a site it
+        # already knew, every single time.
+        #
+        # The guard that stays is the one that matters. A request sharing NO word with the
+        # only trail is refused, so "cancel my subscription" can never run "count open
+        # issues" — running the wrong trail is worse than admitting there is none.
+        if len(keys) == 1:
+            only = self._read_entity_body(PLAYBOOK, keys[0])
+            if only and self._is_plausible(task, only, domain):
+                return Playbook.from_dict(only)
+            return None
 
         # Nobody words a request the same way twice. "how many open issues does
         # microsoft/playwright have" has to find the trail saved as "count open issues on
         # microsoft/playwright", or the memory may as well not be there.
         if task:
-            closest = best_match(task, self.trails_for(domain))
+            closest = best_match(task, self.trails_for(domain), domain=domain)
             if closest:
                 body = self._read_entity_body(PLAYBOOK, trail_key(domain, closest))
                 return Playbook.from_dict(body) if body else None
         return None
+
+    @staticmethod
+    def _is_plausible(task: str | None, body: dict[str, Any], domain: str) -> bool:
+        """Could this stored trail be the job that was asked for?
+
+        A caller who named nothing can only mean whatever is there. A caller who named
+        something has to share at least one meaningful word with it.
+        """
+        if not task:
+            return True
+        return shares_meaning(task, str(body.get("task", "")), domain)
 
     def trails_for(self, domain: str) -> list[str]:
         """The tasks this site has trails for, so a caller can say which one it means."""
@@ -904,7 +925,7 @@ def slug(task: str) -> str:
     return slug.strip("-")[:MAX_SLUG] or "task"
 
 
-def best_match(wanted: str, known: list[str]) -> str | None:
+def best_match(wanted: str, known: list[str], *, domain: str | None = None) -> str | None:
     """Which saved task is the one being asked for, if any.
 
     Compares the words that carry meaning, so rewording survives but two genuinely
@@ -912,7 +933,9 @@ def best_match(wanted: str, known: list[str]) -> str | None:
     two are equally good — guessing between them would run the wrong task, which is worse
     than asking.
     """
-    scored = sorted(((_overlap(wanted, candidate), candidate) for candidate in known), reverse=True)
+    scored = sorted(
+        ((_overlap(wanted, candidate, domain), candidate) for candidate in known), reverse=True
+    )
     if not scored:
         return None
 
@@ -923,17 +946,57 @@ def best_match(wanted: str, known: list[str]) -> str | None:
     return winner if best > runner_up else None
 
 
-def _overlap(wanted: str, candidate: str) -> float:
-    """How much of the request's meaning the saved task accounts for, 0 to 1."""
-    asked = _meaningful(wanted)
-    if not asked:
+def rank_tasks(wanted: str, known: list[str], *, domain: str | None = None) -> list[str]:
+    """The saved tasks, closest first.
+
+    So a caller who has to be asked "which one?" is shown the likeliest answer at the top
+    rather than whatever happens to be first alphabetically.
+    """
+    return [
+        task for _, task in sorted(((_overlap(wanted, t, domain), t) for t in known), reverse=True)
+    ]
+
+
+def shares_meaning(wanted: str, candidate: str, domain: str | None = None) -> bool:
+    """Do these two describe jobs with ANY word in common?
+
+    A far weaker question than `best_match`, and it exists for one specific case: a site
+    with exactly one trail. "Which of the four?" needs a confident answer, but "is this
+    plausibly the only thing I know how to do here?" does not — and refusing there is what
+    made naming a task WORSE than saying nothing at all.
+
+    Zero words in common is still a refusal, because that is the case that matters:
+    "cancel my subscription" must never run "count open issues".
+    """
+    return bool(_meaningful(wanted, domain) & _meaningful(candidate, domain))
+
+
+def _overlap(wanted: str, candidate: str, domain: str | None = None) -> float:
+    """How alike two descriptions of a job are, 0 to 1.
+
+    Measured against the SHORTER of the two, not against the request. Dividing by the
+    request's own length punished a caller for being wordy: "find the top quote on
+    quotes.toscrape.com and tell me who said it" scored 0.11 against the trail saved as
+    "read the first quote", purely because it said more. Every extra word made a correct
+    match look worse.
+    """
+    asked = _meaningful(wanted, domain)
+    against = _meaningful(candidate, domain)
+    if not asked or not against:
         return 0.0
-    return len(asked & _meaningful(candidate)) / len(asked)
+    return len(asked & against) / min(len(asked), len(against))
 
 
-def _meaningful(text: str) -> set[str]:
+def _meaningful(text: str, domain: str | None = None) -> set[str]:
+    """The words in a request that say what the job IS.
+
+    The site's own name is dropped, because the caller already said which site in a
+    separate argument. Leaving it in meant "read the first quote on quotes.toscrape.com"
+    scored worse than "read the first quote" against the very trail it belonged to.
+    """
+    ignore = _NOISE | (_meaningful(domain.replace(".", " ")) if domain else set())
     words = "".join(character if character.isalnum() else " " for character in text.lower())
-    return {word for word in words.split() if word not in _NOISE}
+    return {word for word in words.split() if word not in ignore}
 
 
 def agent_tenant(agent: str | None) -> str:

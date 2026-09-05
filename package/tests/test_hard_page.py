@@ -335,3 +335,31 @@ def test_a_new_tab_inherits_what_the_site_is_known_for(hard: Session, demo_serve
 
     later.locator("#month-button").click()
     assert later.locator("#cookies").count() == 0
+
+
+# ------------------------------------ 10. a menu that only answers pointerdown
+
+
+class TestAMenuThatIgnoresClick:
+    """Radix opens its dropdown on `pointerdown`, never on `click`.
+
+    shadcn/ui is built on Radix, so this is one of the most common menus on the web today.
+    Reported against Cairn from a real marketplace: the menu would not open. Two things had
+    to be told apart — a click that does not send real pointer events, and a selector that
+    matched a menu button in every row of a table and quietly opened the wrong one.
+
+    This pins the first. The second is pinned in test_ambiguous_selectors.py.
+    """
+
+    def test_cairn_click_sends_real_pointer_events(self, hard: Session) -> None:
+        clear_the_banner(hard)
+        hard.act("open the row menu", "click", ref=ref_for(hard, "Row actions"))
+
+        opened = hard.read("attribute", ref="#pointer-menu-button", attribute="aria-expanded")
+        assert opened == "true"
+
+    def test_and_the_menu_items_are_then_there_to_act_on(self, hard: Session) -> None:
+        clear_the_banner(hard)
+        hard.act("open the row menu", "click", ref=ref_for(hard, "Row actions"))
+
+        assert hard.read("visible", ref="#pointer-menu-edit") is True

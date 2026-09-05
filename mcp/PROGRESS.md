@@ -295,3 +295,54 @@ them signed in. Nothing here is demo-site-only any more.
   10 new tests, and they test the claim rather than the plumbing: two profiles are two browsers
   RUNNING AT THE SAME TIME, each keeping its own page and its own trace, while the map they
   both write to stays shared. 122 MCP tests, ruff clean.
+
+- **2026-09-05 (the reply that lost an argument with the model, and a profile that forgot
+  itself)**
+
+  The head-to-head benchmark said Cairn cost MORE than tools that remember nothing. Part of
+  the cause was in the engine's matching, and part was here, in the wording.
+
+  **The `needs_task` reply handed the model a ready-made escape.** The retry advice was
+  conditional and hedged, and directly beneath it `_explore_advice` appended a concrete
+  exploration plan with real page paths. The escape hatch was longer and more actionable
+  than the retry, so the model explored — on a site whose answer was already in memory.
+
+  Now the retry comes first, names the nearest trail, and is PRICED ("one call and no
+  browsing — Cairn answers before the browser even moves"), and the exploration advice is
+  withheld while a trail plausibly fits. "Plausibly" is doing real work: ranking returns
+  EVERY task, so a non-empty list proves nothing about whether any of them is the job —
+  `shares_meaning` decides. Two map tests caught exactly that and were right to.
+
+  A fuzzy match is also no longer silent: the success reply carries `matched_task` and
+  `asked_for`, and says in words when the trail that ran was worded differently from the
+  request. `cairn_save` now hands back the exact call to reuse.
+
+  **The active profile survives a restart.** An MCP server restarts whenever its client
+  does, and the profile used to reset to `default` with no message. An agent that had been
+  an admin for an hour came back signed in to nothing, and the next failure looked like a
+  broken trail or a missing password. It is written to `<profiles_dir>/.active`, so an
+  agent with its own `CAIRN_PROFILES_DIR` keeps its own answer.
+
+  Remembering an identity is only safe if it is announced, so it is: the startup log, EVERY
+  `cairn_run` reply (`profile`), and every missing-secret message. `secrets_profile` returns
+  a name always, `default` included — returning None for the default was a deliberate
+  decision of mine and it hid the one fact that explained the failure.
+
+  Two smaller gaps closed alongside: `cairn_repair` built its `Executor` with no profile at
+  all, and the server's own `instructions` still told host AIs that "Cairn keeps one browser
+  profile" — untrue since profiles landed. It now tells them to give each kind of user its
+  own profile BEFORE signing in.
+
+  129 MCP tests, ruff clean.
+
+  **The measured result of all of it** (same four sites, Sonnet 5 / medium, three runs):
+  Cairn went from 29 / 20 / 18 tool calls to **28 / 14 / 8**, against 16 / 16 / 16 for both
+  Playwright MCP and Chrome DevTools MCP. A learned site costs 2 calls, one of which is the
+  harness loading the tool schema rather than Cairn. The 14 on run 2 is one site — Hacker
+  News — where the model explored, answered and never saved, so it had to be learned twice. The engine-side cause is in `package/PROGRESS.md` — the trail had no answer
+  in it — but two things here were part of it: the `needs_task` reply that talked the model
+  into exploring, and the fact that nothing reminded it to save. `cairn_read` now says, at
+  the moment the caller has its answer, that the site costs full price again unless it
+  saves. On one of the four sites the whole task had been explored, answered, and never
+  written down, three runs in a row.
+

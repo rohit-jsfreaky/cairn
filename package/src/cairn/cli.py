@@ -148,9 +148,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     browser = Browser(headless=not args.headed, profile=_profile_path(args))
     try:
         browser.start()
-        result = Executor(store, browser, emitter=emitter).run(
-            domain, task=args.task, start_url=start_url
-        )
+        result = Executor(
+            store,
+            browser,
+            emitter=emitter,
+            # Named even when it is `default`, so a missing password says WHICH identity
+            # it looked under. A domain-wide entry is still found either way.
+            profile=getattr(args, "profile", DEFAULT_PROFILE_NAME),
+        ).run(domain, task=args.task, start_url=start_url)
     except NoTrailError as gone:
         print(f"\n  {CROSS} {gone}\n")
         return 2
@@ -159,6 +164,15 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     for saved in result.saved_files:
         print(f"  {TICK} saved  {saved}")
+
+    if result.wrong_place:
+        # Printed nothing at all before this, so the run just ended with exit code 1 and
+        # no explanation — the one outcome where the trail is perfectly fine.
+        print()
+        print(f"  {CROSS} {result.reason}")
+        print("    nothing is broken. Get to the trail's starting page and run it again.")
+        print()
+        return 5
 
     if result.blocked:
         print()

@@ -167,3 +167,183 @@ class TestReplayWithoutTheSecret:
             Executor(store, browser).run(domain, start_url=f"{demo_server}/")
 
         assert "never stores it" in str(raised.value)
+
+
+class TestOneDomainWithSeveralSignIns:
+    """A domain is not one identity.
+
+    Found on a real marketplace: a customer sign-in, a vendor sign-in and an admin sign-in,
+    all on the same host, each with its own password. One password per domain meant two of
+    three saved trails could never replay — and the third would try the wrong password
+    against a real login, which is how an account gets locked out.
+    """
+
+    def test_each_profile_gets_its_own_password(self, tmp_path) -> None:
+        where = tmp_path / "secrets.json"
+        where.write_text(
+            json.dumps(
+                {
+                    "shop.example.com": {
+                        "admin": {"password": "admin-one"},
+                        "vendor": {"password": "vendor-one"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        as_admin = resolve("shop.example.com", "password", profile="admin", secrets_file=where)
+        as_vendor = resolve("shop.example.com", "password", profile="vendor", secrets_file=where)
+
+        assert as_admin == "admin-one"
+        assert as_vendor == "vendor-one"
+
+    def test_a_domain_wide_password_still_answers_when_a_profile_has_none(self, tmp_path) -> None:
+        """Nobody's existing secrets file may stop working because profiles now exist."""
+        where = tmp_path / "secrets.json"
+        where.write_text(
+            json.dumps({"shop.example.com": {"password": "the-only-one"}}), encoding="utf-8"
+        )
+
+        assert resolve("shop.example.com", "password", secrets_file=where) == "the-only-one"
+        assert (
+            resolve("shop.example.com", "password", profile="admin", secrets_file=where)
+            == "the-only-one"
+        )
+
+    def test_a_profile_beats_the_domain_wide_one(self, tmp_path) -> None:
+        where = tmp_path / "secrets.json"
+        where.write_text(
+            json.dumps(
+                {"shop.example.com": {"password": "fallback", "admin": {"password": "specific"}}}
+            ),
+            encoding="utf-8",
+        )
+
+        assert (
+            resolve("shop.example.com", "password", profile="admin", secrets_file=where)
+            == "specific"
+        )
+
+    def test_the_environment_can_scope_by_profile_too(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("CAIRN_SECRET_SHOP_EXAMPLE_COM_ADMIN_PASSWORD", "from-the-env")
+
+        got = resolve(
+            "shop.example.com", "password", profile="admin", secrets_file=tmp_path / "none.json"
+        )
+
+        assert got == "from-the-env"
+
+    def test_a_missing_secret_says_which_profile_it_wants(self, tmp_path) -> None:
+        with pytest.raises(MissingSecret) as refused:
+            resolve("shop.example.com", "password", profile="admin", secrets_file=tmp_path / "x")
+
+        said = str(refused.value)
+        assert 'profile "admin"' in said
+        assert "CAIRN_SECRET_SHOP_EXAMPLE_COM_ADMIN_PASSWORD" in said
+
+    def test_a_profile_block_is_never_mistaken_for_a_value(self, tmp_path) -> None:
+        """`{"admin": {...}}` is another profile, not a secret called "admin"."""
+        where = tmp_path / "secrets.json"
+        where.write_text(
+            json.dumps({"shop.example.com": {"admin": {"password": "a"}}}), encoding="utf-8"
+        )
+
+        with pytest.raises(MissingSecret):
+            resolve("shop.example.com", "admin", secrets_file=where)
+
+
+class TestTheWrongPasswordIsNeverTypedIn:
+    """The fault nobody reported, and the worst one in this file.
+
+    `_places_to_look` used to run: profile env, PLAIN env, profile file, plain file. So an
+    unprofiled environment variable — the ordinary way anyone sets one password for a site —
+    outranked the profile's OWN entry in secrets.json. Working as `admin`, Cairn typed the
+    CUSTOMER's password into the admin login, silently, and a few of those lock an account.
+
+    Both of a profile's places now come before both of the domain-wide ones.
+    """
+
+    def test_the_profiles_own_entry_beats_an_unprofiled_environment_variable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        where = tmp_path / "secrets.json"
+        where.write_text(
+            json.dumps({"shop.example.com": {"admin": {"password": "the-admin-one"}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CAIRN_SECRET_SHOP_EXAMPLE_COM_PASSWORD", "the-customer-one")
+
+        got = resolve("shop.example.com", "password", profile="admin", secrets_file=where)
+
+        assert got == "the-admin-one"
+
+    def test_a_profiles_own_environment_variable_still_wins_over_everything(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Most specific first is the whole rule. Reordering must not break the top of it."""
+        where = tmp_path / "secrets.json"
+        where.write_text(
+            json.dumps({"shop.example.com": {"admin": {"password": "from-the-file"}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CAIRN_SECRET_SHOP_EXAMPLE_COM_ADMIN_PASSWORD", "from-the-env")
+
+        got = resolve("shop.example.com", "password", profile="admin", secrets_file=where)
+
+        assert got == "from-the-env"
+
+
+class TestSayingWhoItLookedAs:
+    """A missing password is usually the wrong identity, not a missing entry.
+
+    The password IS in the file, under `admin`, and the active profile has quietly gone
+    back to `default`. The old message said the site had no password at all, which sent a
+    person to edit a file that was already correct.
+    """
+
+    def test_the_default_profile_is_named_too(self, tmp_path) -> None:
+        with pytest.raises(MissingSecret) as refused:
+            resolve("shop.example.com", "password", profile="default", secrets_file=tmp_path / "x")
+
+        assert 'profile "default"' in str(refused.value)
+
+    def test_it_names_the_profiles_that_do_have_one(self, tmp_path) -> None:
+        where = tmp_path / "secrets.json"
+        where.write_text(
+            json.dumps(
+                {
+                    "shop.example.com": {
+                        "admin": {"password": "a"},
+                        "vendor": {"password": "v"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(MissingSecret) as refused:
+            resolve("shop.example.com", "password", profile="default", secrets_file=where)
+
+        said = str(refused.value)
+        assert '"admin"' in said
+        assert '"vendor"' in said
+        assert "cairn_profile" in said
+
+    def test_but_never_the_value(self, tmp_path) -> None:
+        where = tmp_path / "secrets.json"
+        where.write_text(
+            json.dumps({"shop.example.com": {"admin": {"password": "hunter2"}}}), encoding="utf-8"
+        )
+
+        with pytest.raises(MissingSecret) as refused:
+            resolve("shop.example.com", "password", profile="default", secrets_file=where)
+
+        assert "hunter2" not in str(refused.value)
+
+    def test_and_says_nothing_when_no_other_profile_has_one(self, tmp_path) -> None:
+        """Advice about switching profile is noise on a machine with only one."""
+        with pytest.raises(MissingSecret) as refused:
+            resolve("acme.com", "password", secrets_file=tmp_path / "nothing.json")
+
+        assert "cairn_profile" not in str(refused.value)

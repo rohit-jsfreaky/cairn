@@ -52,6 +52,10 @@ DOWNLOAD_POLL_MS = 50
 # A remembered read is a step whose job is to produce a value.
 READ_ACTION = "read"
 
+# How position is written when a control has no name to be called by. The same spelling
+# Playwright uses, so one form covers both a stored locator and a plain CSS selector.
+NTH_SUFFIX = " >> nth="
+
 # How long a page whose controls have not changed may go without being written again.
 #
 # The map is stored as one body per site, so every write re-serialises the whole thing and
@@ -79,6 +83,12 @@ class TraceEntry:
     url_before: str = ""
     url_after: str = ""
     text_gained: str = ""
+    answer: str = ""
+    """What a remembered READ produced when it was learned.
+
+    Kept so a trail knows the read once had an answer. A replay that comes back empty on a
+    step that used to answer is drift, not success — and reporting it as success is how a
+    warm run "works" while handing back nothing."""
     download: str | None = None
     at: str = field(default_factory=utc_now)
 
@@ -105,8 +115,18 @@ class Session:
         self.store = store
         self.events = emitter or Emitter()
         self.trace: list[TraceEntry] = []
+        # The last read that was NOT marked as the answer, and where it happened. Kept
+        # because a caller that never marks one still needs its trail to answer — see
+        # `_promote_the_last_read`.
+        self._loose_read: tuple[int, TraceEntry] | None = None
         self._snapshot: Snapshot | None = None
         self.last_result: Any = None
+        # Set by `save`. True when the trail's answer came from a read the caller never
+        # marked, so the caller can be told rather than left to find out on the next run.
+        self.answered_from_the_last_read = False
+        # Set by `save`. How many elements on the page said the value the caller handed
+        # over — 0 when none did, or when no value was given. See `_record_the_value`.
+        self.answered_from_the_value_given = 0
         self.tool_calls = 0
         # The site map is read once per site and kept here, because it is one body for the
         # whole site and reloading it on every look would cost more than it saves.
@@ -153,6 +173,14 @@ class Session:
         self.last_result = None
 
         element = self._perform(action, ref=ref, value=value, to=to)
+
+        # An anchor was clicked and the address has not moved. Either it went nowhere, or
+        # this is a single-page app that will change the URL in a moment — a React Router
+        # <Link> does exactly that. Waiting a little costs nothing when it really did go
+        # nowhere, and is the difference between recording the right address and the wrong
+        # one when it did not.
+        if element is not None and element.href and self.browser.page.url == url_before:
+            self.browser.await_url_change(url_before)
 
         # A password is remembered as "there is a password here", never as the password.
         secret = secret_name(element) if action in _TEXT_ENTRY else None
@@ -263,6 +291,7 @@ class Session:
             return
         if action == "restart_trail":
             self.trace.clear()
+            self._loose_read = None
             return
         if action == "set_time":
             if not value:
@@ -279,6 +308,11 @@ class Session:
         recording an accident.
         """
         self.browser.dismiss_when_seen(selector)
+        if self.store is None:
+            # A session with no memory still gets the overlay cleared; there is simply
+            # nowhere to write it down. `Session(browser)` is a supported shape and used
+            # by anything driving the browser without wanting to remember.
+            return
         domain = domain_of(self.browser.page.url)
         knowledge = self.store.load_site_knowledge(domain) or SiteKnowledge(domain=domain)
         self.store.save_site_knowledge(knowledge.merge(overlay=selector))
@@ -358,7 +392,7 @@ class Session:
             return True
         return (monotonic() - self._map_written) >= MAP_TOUCH_SECONDS
 
-    def _element_for(self, ref: str | None) -> Element:
+    def _element_for(self, ref: str | None, *, one: bool = True) -> Element:
         """Find what the caller means, by ref or by CSS selector.
 
         A dashboard keeps its numbers in plain `div`s with no role, and those are correctly
@@ -380,7 +414,7 @@ class Session:
         if remembered is not None:
             return self._element_by_memory(ref, remembered)
 
-        return self._element_by_selector(ref)
+        return self._element_by_selector(ref, one=one)
 
     def _element_by_memory(self, wording: str, locator: Locator) -> Element:
         """Find a control by what the MAP calls it, rather than by a ref from this page.
@@ -407,14 +441,30 @@ class Session:
         role, _, name = locator.value.partition("|") if locator.kind == "role" else ("", "", "")
         return Element(ref=wording, role=role, name=name or wording, found_by=locator)
 
-    def _element_by_selector(self, selector: str) -> Element:
-        """Build an element from a CSS selector the caller wrote themselves."""
+    def _element_by_selector(self, selector: str, *, one: bool = True) -> Element:
+        """Build an element from a CSS selector the caller wrote themselves.
+
+        Refuses an AMBIGUOUS selector rather than quietly taking the first match. This was
+        the worst bug Cairn has had: on a table with a menu button in every row,
+        `button[aria-haspopup="menu"]` matched them all, Cairn clicked row one's, and
+        reported success. The caller then spent eight calls hunting a bug in their own
+        application. Worse, a wrong click that reports success gets written into a trail by
+        `cairn_save` and replayed for ever.
+
+        Playwright refuses the same selector for the same reason. Silence is the only
+        genuinely unsafe answer here: too many matches is a question, and a question
+        deserves to be asked rather than guessed at.
+        """
         try:
             found = self.browser.page.locator(selector)
-            if found.count() == 0:
-                raise ActionFailed(f"nothing on this page matches {selector!r}")
+            matches = found.count()
         except PlaywrightError as bad:
-            raise ActionFailed(f"{selector!r} is not a selector this page understands") from bad
+            raise ActionFailed(_not_a_selector(selector)) from bad
+
+        if matches == 0:
+            raise ActionFailed(_nothing_matches(selector))
+        if one and matches > 1:
+            raise ActionFailed(_too_many(selector, matches, found))
 
         return Element(ref=selector, role="", name="", selector=selector, css=selector)
 
@@ -448,30 +498,73 @@ class Session:
         except reads.UnknownRead as unknown:
             raise ActionFailed(str(unknown)) from unknown
 
-        element = self.browser.describe(self._element_for(ref)) if spec.needs_target else None
-        target = self.browser.locate(element) if element else None
+        # `count` and `all_text` are ABOUT matching many, so ambiguity is not an error for
+        # them. Every other read is about one element, and reading the first of several
+        # silently is how a caller ends up believing the wrong number.
+        element = (
+            self.browser.describe(self._element_for(ref, one=not spec.many))
+            if spec.needs_target
+            else None
+        )
+        target = self.browser.locate(element, one=not spec.many) if element else None
         try:
             answer = reads.read(kind, page=self.browser.page, target=target, attribute=attribute)
         except reads.ReadNeedsMore as incomplete:
             raise ActionFailed(str(incomplete)) from incomplete
 
-        if remember:
-            self._remember_read(kind, intent, element, attribute)
+        self._keep(kind, intent, element, attribute, answer, marked=remember)
         return answer
 
-    def _remember_read(
-        self, kind: str, intent: str, element: Element | None, attribute: str | None
+    def _keep(
+        self,
+        kind: str,
+        intent: str,
+        element: Element | None,
+        attribute: str | None,
+        answer: Any,
+        *,
+        marked: bool,
     ) -> None:
-        """Write a read into the trail, so replay hands back the answer."""
-        self.trace.append(
-            TraceEntry(
-                intent=intent or f"read the {kind}",
-                action=READ_ACTION,
-                value=f"{kind}:{attribute}" if attribute else kind,
-                element=element,
-                url_before=self.browser.page.url,
-                url_after=self.browser.page.url,
-            )
+        """Write a read into the trail, or hold on to it in case nothing better comes.
+
+        Most reads are just looking around and replaying them would achieve nothing, so
+        only a read the caller MARKS becomes a step. That was the whole rule, and it fails
+        the same way every time: measured on 2026-09-05 against four public sites, the
+        caller never marked one. The trail walked to the page and stopped, so every later
+        run read the page again — which is the entire cost Cairn exists to remove, and it
+        made Cairn more expensive than a browser tool with no memory at all.
+
+        Telling the caller harder did not work; the tool description already shouts it. So
+        the unmarked read is kept aside, and `save` uses it only if the trail would
+        otherwise have no answer in it at all.
+        """
+        entry = self._read_entry(kind, intent, element, attribute, answer)
+        if marked:
+            self.trace.append(entry)
+            return
+        # Nothing read is not an answer, and neither is a whole-page dump — remembering
+        # that would hand back thousands of characters on every future run, which the read
+        # tool warns against by name.
+        if entry.answer and element is not None:
+            self._loose_read = (len(self.trace), entry)
+
+    def _read_entry(
+        self,
+        kind: str,
+        intent: str,
+        element: Element | None,
+        attribute: str | None,
+        answer: Any = None,
+    ) -> TraceEntry:
+        """One read, in the shape a trail stores it."""
+        return TraceEntry(
+            intent=intent or f"read the {kind}",
+            action=READ_ACTION,
+            value=f"{kind}:{attribute}" if attribute else kind,
+            element=element,
+            answer="" if answer is None else str(answer).strip(),
+            url_before=self.browser.page.url,
+            url_after=self.browser.page.url,
         )
 
     # ---------------------------------------------------------------- verify
@@ -487,7 +580,7 @@ class Session:
 
     # ------------------------------------------------------------------ save
 
-    def save(self, task: str, *, domain: str | None = None) -> Playbook:
+    def save(self, task: str, *, domain: str | None = None, answer: str | None = None) -> Playbook:
         """Turn the trace into a playbook and write it to memory.
 
         This is the moment a slow, exploratory run becomes a fast one forever after.
@@ -497,6 +590,8 @@ class Session:
         if not self.trace:
             raise ActionFailed("nothing to save — the trace is empty")
 
+        self.answered_from_the_last_read = self._promote_the_last_read()
+        self.answered_from_the_value_given = self._record_the_value(answer, task)
         site = domain or domain_of(self.trace[0].url_after or self.browser.page.url)
         playbook = distill(self.trace, domain=site, task=task)
 
@@ -510,6 +605,107 @@ class Session:
                 )
             )
         return playbook
+
+    def _record_the_value(self, answer: str | None, task: str) -> int:
+        """Turn the value the caller is about to report into the trail's answer step.
+
+        The last hole, and the one no amount of instruction closed. Measured 2026-09-05 on
+        books.toscrape.com: the price lives in `.price_color`, which matches SEVEN elements
+        on that page, so the read was refused — correctly; guessing would report another
+        book's price forever. The refusal names the matches, so the caller reads the value
+        out of the refusal itself, answers, and never makes a successful read. The trail
+        then walks three pages and hands back nothing, on every run, for ever.
+
+        The caller always HAS the value at that point. So `cairn_save(answer=...)` takes
+        it, and Cairn does the part it is good at: find which element on this page says
+        exactly that, and write down every durable way of finding that element again.
+        It costs the caller no extra call. Returns how many elements said it, so the
+        caller can be told when it was more than one.
+        """
+        if not answer or any(entry.action == READ_ACTION for entry in self.trace):
+            return 0
+        matches, element = self.browser.showing(answer.strip())
+        if element is None:
+            return 0
+        self.trace.append(self._read_entry("text", task, element, None, answer.strip()))
+        return matches
+
+    def _promote_the_last_read(self) -> bool:
+        """If nothing in this trail answers anything, keep the last read that did.
+
+        A trail with no read is a real and correct thing — plenty of tasks are about
+        doing, not reading — so this only ever fires when the caller read SOMETHING and
+        marked none of it. In that case the last read is the answer, near enough always:
+        it is what the caller went on to report.
+
+        It is put back where it happened, not on the end, because acts can follow a read
+        and a step out of order would replay in the wrong place.
+        """
+        if self._loose_read is None or any(e.action == READ_ACTION for e in self.trace):
+            return False
+        where, entry = self._loose_read
+        self.trace.insert(min(where, len(self.trace)), entry)
+        self._loose_read = None
+        return True
+
+
+def _too_many(selector: str, matches: int, found: Any) -> str:
+    """Say how many, say which, and say how to mean one of them."""
+    names = []
+    for index in range(min(matches, 4)):
+        try:
+            words = (found.nth(index).inner_text() or "").strip().replace("\n", " ")[:40]
+        except PlaywrightError:
+            words = ""
+        names.append(f"{index}: {words or '(no text)'}")
+    return (
+        f"{selector!r} matches {matches} elements on this page, so Cairn will not guess "
+        f"which one you mean. The first few are — {'; '.join(names)}. "
+        f'Say which you mean. The shortest way is to add " >> nth=0" to the end for the '
+        f'first, " >> nth=-1" for the last; or narrow the selector with a parent; or use '
+        f"a `ref` from cairn_read(kind='page'); or a `use` string from cairn_map such as "
+        f'"role=button|Save changes".'
+    )
+
+
+def _nothing_matches(selector: str) -> str:
+    """Nothing matched — and the likeliest reason is that this was never a selector.
+
+    "Export Vendors CSV" is perfectly valid CSS: three tag names in a descendant chain. So
+    Playwright does not reject it, it simply finds nothing, and the old message stopped at
+    "nothing on this page matches" — true, useless, and silent about the one form that
+    would have worked. A visible label is the most natural thing to reach for, so this
+    happens again and again until the message says what to do about it.
+    """
+    hint = ""
+    if _reads_like_a_label(selector):
+        hint = (
+            f" That looks like a LABEL rather than a selector. Say it as "
+            f'"role=button|{selector}" — or role=link, role=textbox, whichever it is.'
+        )
+    return (
+        f"nothing on this page matches {selector!r}.{hint} Refs come from "
+        f"cairn_read(kind='page'), and `use` strings from cairn_map."
+    )
+
+
+def _reads_like_a_label(selector: str) -> bool:
+    """Is this the words on a control rather than CSS?
+
+    Real selectors are built out of punctuation — a dot, a hash, brackets, a combinator.
+    Words with spaces and none of that are almost always what somebody read off the screen.
+    """
+    return " " in selector.strip() and not any(mark in selector for mark in ".#[]>+~:=*")
+
+
+def _not_a_selector(selector: str) -> str:
+    """The message for something that is not CSS at all — usually a name, not a selector."""
+    return (
+        f"{selector!r} is not a selector this page understands. If that is the NAME of a "
+        f'control rather than CSS, say it as "role=button|{selector}" — that is the form '
+        f"cairn_map hands back, and Cairn resolves it the same way replay does. Otherwise "
+        f"use a `ref` from cairn_read(kind='page')."
+    )
 
 
 def _as_stored_locator(ref: str) -> Locator | None:
@@ -525,33 +721,56 @@ def _as_stored_locator(ref: str) -> Locator | None:
     kind, separator, value = ref.partition("=")
     if not separator or not value:
         return None
+
+    # `role=button >> nth=3` — how the map names a control that has no name of its own.
+    # A CSS selector carrying the same suffix is left alone: its kind is not a locator
+    # kind, so it falls through and Playwright reads `>> nth=` itself.
+    index = None
+    if NTH_SUFFIX in value:
+        value, _, written = value.partition(NTH_SUFFIX)
+        try:
+            index = int(written)
+        except ValueError:
+            return None
+
     if kind == "href":
         # Stored as a `structural` locator, whose value keeps the `href=` in front of it.
-        return Locator(kind="structural", value=ref)
+        return Locator(kind="structural", value=ref, nth=index)
     if kind in get_args(LocatorKind):
-        return Locator(kind=kind, value=value)  # type: ignore[arg-type]
+        return Locator(kind=kind, value=value, nth=index)  # type: ignore[arg-type]
     return None
 
 
 def controls_in(snapshot: Snapshot) -> list[Control]:
     """The controls on a page, in the form the map keeps them.
 
-    Named controls only. Something with no name cannot be found by name later, so it would
-    be bytes in the map that no future run could ever act on.
+    The UNNAMED ones are kept too, numbered by their position among controls of the same
+    role. They were left out at first, on the reasoning that something with no name cannot
+    be found by name later — which was true and beside the point. On an admin table the
+    unnamed controls are the icon buttons in every row: view, approve, reject, suspend. The
+    map listed the sidebar and the search box and none of the things anybody wanted to
+    click, on exactly the page where it should have saved the most work.
 
     No `ref` travels: a ref only means anything inside the snapshot that produced it.
     """
     seen = utc_now()
-    return [
-        Control(
-            role=element.role,
-            name=element.name,
-            href=_where_it_goes(element.href),
-            last_seen=seen,
+    unnamed_so_far: dict[str, int] = {}
+    controls = []
+    for element in snapshot.elements:
+        position = None
+        if not element.name:
+            position = unnamed_so_far.get(element.role, 0)
+            unnamed_so_far[element.role] = position + 1
+        controls.append(
+            Control(
+                role=element.role,
+                name=element.name,
+                href=_where_it_goes(element.href),
+                nth=position,
+                last_seen=seen,
+            )
         )
-        for element in snapshot.elements
-        if element.name
-    ]
+    return controls
 
 
 def _where_it_goes(href: str | None) -> str | None:
@@ -599,7 +818,10 @@ def check_postcondition(browser: Browser, expected: Postcondition) -> bool:
     disagree with the read an AI would have done by hand.
     """
     if expected.kind == "url_contains":
-        return expected.value in browser.page.url
+        # `target` holds the OTHER acceptable URL when a step navigated through a
+        # redirect. Arriving at either end of that redirect is arriving.
+        here = browser.page.url
+        return expected.value in here or bool(expected.target and expected.target in here)
     if expected.kind == "text_present":
         return expected.value.lower() in browser.text().lower()
     if expected.kind == "text_gone":

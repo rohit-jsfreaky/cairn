@@ -23,6 +23,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 SECRETS_FILE = Path.home() / ".cairn" / "secrets.json"
 ENV_PREFIX = "CAIRN_SECRET"
@@ -36,27 +37,90 @@ class MissingSecret(RuntimeError):
     """
 
 
-def env_var_name(domain: str, field: str) -> str:
+def env_var_name(domain: str, field: str, profile: str | None = None) -> str:
     """The environment variable a given secret would come from."""
-    slug = re.sub(r"[^A-Za-z0-9]+", "_", f"{domain}_{field}").strip("_").upper()
+    parts = f"{domain}_{profile}_{field}" if profile else f"{domain}_{field}"
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", parts).strip("_").upper()
     return f"{ENV_PREFIX}_{slug}"
 
 
-def resolve(domain: str, field: str, *, secrets_file: Path | None = None) -> str:
-    """Find one secret, or explain precisely how to provide it."""
-    from_env = os.environ.get(env_var_name(domain, field))
-    if from_env:
-        return from_env
+def resolve(
+    domain: str,
+    field: str,
+    *,
+    profile: str | None = None,
+    secrets_file: Path | None = None,
+) -> str:
+    """Find one secret, or explain precisely how to provide it.
 
+    A domain is not one identity. A marketplace has a customer sign-in, a vendor sign-in
+    and an admin sign-in on the same host, each with its own password — so one password per
+    domain meant two of three saved trails could never replay, and the third would try the
+    wrong password against a real login and risk locking the account out.
+
+    So the PROFILE is asked for first, and the plain domain entry is the fallback. That
+    keeps every secrets file anybody already has working exactly as it did.
+    """
     path = secrets_file or SECRETS_FILE
-    from_file = _read_file(path).get(domain, {}).get(field)
-    if from_file:
-        return str(from_file)
+    for where in _places_to_look(domain, field, profile, path):
+        if where:
+            return str(where)
+    raise MissingSecret(_how_to_provide_it(domain, field, profile, path))
 
-    raise MissingSecret(
-        f'Cairn needs the "{field}" for {domain}, and never stores it. Provide it either as '
-        f"the environment variable {env_var_name(domain, field)}, or in {path} as "
-        f'{{"{domain}": {{"{field}": "..."}}}}.'
+
+def _places_to_look(domain: str, field: str, profile: str | None, path: Path) -> list[str | None]:
+    """Every place this secret could be, most specific first.
+
+    BOTH of the profile's own places come before EITHER of the domain-wide ones. Ordered
+    the other way round — which is how this was written — an unprofiled environment
+    variable beat the profile's own entry in the file: with CAIRN_SECRET_SHOP_PASSWORD
+    exported for the customer sign-in and the admin password sitting in secrets.json,
+    running as `admin` typed the CUSTOMER's password into the admin login. Silently, with
+    no error. That is the account lockout profiles exist to prevent.
+    """
+    for_domain = _read_file(path).get(domain, {})
+    per_profile = for_domain.get(profile) if profile else None
+    return [
+        os.environ.get(env_var_name(domain, field, profile)) if profile else None,
+        per_profile.get(field) if isinstance(per_profile, dict) else None,
+        os.environ.get(env_var_name(domain, field)),
+        # Only a string is a value. A nested object here is another profile's block.
+        for_domain.get(field) if isinstance(for_domain.get(field), str) else None,
+    ]
+
+
+def _how_to_provide_it(domain: str, field: str, profile: str | None, path: Path) -> str:
+    """Say exactly what to set, and — usually the real answer — who it was looked up as."""
+    whose = f' (profile "{profile}")' if profile else ""
+    shape = (
+        f'{{"{domain}": {{"{profile}": {{"{field}": "..."}}}}}}'
+        if profile
+        else f'{{"{domain}": {{"{field}": "..."}}}}'
+    )
+    return (
+        f'Cairn needs the "{field}" for {domain}{whose}, and never stores it. Provide it '
+        f"either as the environment variable {env_var_name(domain, field, profile)}, or in "
+        f"{path} as {shape}." + _but_these_profiles_have_it(domain, field, profile, path)
+    )
+
+
+def _but_these_profiles_have_it(domain: str, field: str, profile: str | None, path: Path) -> str:
+    """Name the profiles that DO have this secret for this site.
+
+    Everything needed is already in the file just read, and it turns "your secrets file is
+    wrong" into "you are signed in as the wrong identity" — which is what it usually is.
+    """
+    others = sorted(
+        name
+        for name, block in _read_file(path).get(domain, {}).items()
+        if name != profile and isinstance(block, dict) and block.get(field)
+    )
+    if not others:
+        return ""
+    named = ", ".join(f'"{name}"' for name in others)
+    return (
+        f" This machine does have a {field} for {domain} under {named} — "
+        f"switch profile with cairn_profile if you meant one of those."
     )
 
 
@@ -80,11 +144,16 @@ def store(domain: str, field: str, value: str, *, secrets_file: Path | None = No
 
 
 def known_fields(domain: str, *, secrets_file: Path | None = None) -> list[str]:
-    """Which secrets this machine already has for a site. Names only, never values."""
+    """Which secrets this machine already has for a site. Names only, never values.
+
+    A profile's block is named too, so `["admin", "password"]` reads as "there is an admin
+    block and a domain-wide password" — which is what somebody looking for a missing one
+    needs to see.
+    """
     return sorted(_read_file(secrets_file or SECRETS_FILE).get(domain, {}))
 
 
-def _read_file(path: Path) -> dict[str, dict[str, str]]:
+def _read_file(path: Path) -> dict[str, dict[str, Any]]:
     if not path.is_file():
         return {}
     try:

@@ -300,6 +300,67 @@ def test_an_unrelated_task_matches_nothing(store: CairnStore) -> None:
     assert store.load_playbook("github.com", "cancel my subscription") is None
 
 
+# ----------------- the site with ONE trail, after the agent benchmark (2026-09-05)
+#
+# Measured against Playwright MCP and Chrome DevTools MCP on four sites: Cairn cost MORE
+# than tools that remember nothing, on every run. The trace said why. `cairn_run` was
+# called with a task, did not match, and the model read the page itself instead — on a
+# site with exactly one trail, which could only ever have been the one it wanted.
+#
+# The cause was one clause, `if len(keys) == 1 and not task`. Naming the task, which the
+# tool description tells the model to do, was WORSE than saying nothing.
+
+
+def test_one_trail_and_a_rewording_of_it_runs(store: CairnStore) -> None:
+    from cairn.models import Playbook
+
+    store.save_playbook(Playbook(domain="quotes.toscrape.com", task="read the first quote"))
+
+    found = store.load_playbook("quotes.toscrape.com", "what is the quote at the top of the page")
+    assert found is not None
+    assert found.task == "read the first quote"
+
+
+def test_one_trail_and_a_long_request_naming_the_site_runs(store: CairnStore) -> None:
+    """The caller passes `site` separately, so repeating the domain in the task must not
+    count against the match. It used to: every extra word divided the score."""
+    from cairn.models import Playbook
+
+    store.save_playbook(Playbook(domain="quotes.toscrape.com", task="read the first quote"))
+
+    found = store.load_playbook(
+        "quotes.toscrape.com",
+        "find the top quote on quotes.toscrape.com and tell me who said it",
+    )
+    assert found is not None
+    assert found.task == "read the first quote"
+
+
+def test_one_trail_and_a_different_job_still_refuses(store: CairnStore) -> None:
+    """The single-trail fallback is not "run whatever is there". Running the wrong trail
+    is worse than admitting there is none, however few there are."""
+    from cairn.models import Playbook
+
+    store.save_playbook(Playbook(domain="shop.example.com", task="count open orders"))
+
+    assert store.load_playbook("shop.example.com", "cancel my subscription") is None
+
+
+def test_the_trail_that_ran_can_be_told_apart_from_the_words_asked_for(
+    browser: Browser, store: CairnStore, demo_server: str
+) -> None:
+    """A fuzzy match must never be silent — the caller has to see WHICH trail ran."""
+    domain = domain_of(demo_server)
+    session = Session(browser=browser, store=store)
+    session.act("open the billing page", "goto", value=f"{demo_server}/")
+    session.save("open the billing page")
+
+    result = Executor(store, browser).run(domain, task="show me billing")
+
+    assert result.ok
+    assert result.metrics.task == "open the billing page"
+
+
 def test_matching_ignores_words_that_carry_no_meaning() -> None:
     from cairn.store import best_match
 
@@ -595,3 +656,229 @@ def test_restarting_is_never_a_step_itself(
     session.act("open it again", "goto", value=f"{demo_server}/")
 
     assert [entry.action for entry in session.trace] == ["goto"]
+
+
+# ----------------- the trail that walked to the page and stopped (2026-09-05)
+#
+# Measured against Playwright MCP and Chrome DevTools MCP on four public sites, three runs
+# each. On three of the four, Cairn's SECOND run still read the page itself — because the
+# saved trail had no answer in it. `remember=True` marks the read that is the answer, the
+# read tool's description shouts about it in capitals, and the caller never passed it once
+# in twelve runs.
+#
+# Telling it harder was not going to work. So a read that is not marked is kept aside, and
+# used only if the trail would otherwise answer nothing at all.
+
+
+def test_a_read_nobody_marked_still_becomes_the_answer(
+    browser: Browser, store: CairnStore, demo_server: str
+) -> None:
+    session = Session(browser=browser, store=store)
+    session.act("open the billing page", "goto", value=f"{demo_server}/")
+    session.read("text", ref=ref_for(session, "Sign in"))
+
+    session.save("read the sign in button")
+
+    result = Executor(store, browser).run(
+        domain_of(demo_server), task="read the sign in button", start_url=f"{demo_server}/"
+    )
+    assert result.answers, "a trail that read something must answer something"
+
+
+def test_and_the_caller_is_told_it_was_chosen_rather_than_marked(
+    browser: Browser, store: CairnStore, demo_server: str
+) -> None:
+    """Guessing is fine. Guessing silently is not — only the caller knows if it picked the
+    right read."""
+    session = Session(browser=browser, store=store)
+    session.act("open the billing page", "goto", value=f"{demo_server}/")
+    session.read("text", ref=ref_for(session, "Sign in"))
+
+    session.save("read the sign in button")
+
+    assert session.answered_from_the_last_read is True
+
+
+def test_a_marked_read_is_never_second_guessed(
+    browser: Browser, store: CairnStore, demo_server: str
+) -> None:
+    """The moment anything is marked, choosing stops. A caller that says what it wants is
+    obeyed exactly."""
+    session = Session(browser=browser, store=store)
+    session.act("open the billing page", "goto", value=f"{demo_server}/")
+    session.read("title", remember=True, intent="the page title")
+    session.read("text", ref=ref_for(session, "Sign in"))
+
+    playbook = session.save("read the title")
+
+    assert session.answered_from_the_last_read is False
+    assert [s.intent for s in playbook.steps if s.action == READ_ACTION] == ["the page title"]
+
+
+def test_a_task_that_reads_nothing_still_saves_nothing(
+    browser: Browser, store: CairnStore, demo_server: str
+) -> None:
+    """Plenty of tasks are about doing, not reading. Inventing an answer step for those
+    would put a read into a trail that never had one."""
+    session = Session(browser=browser, store=store)
+    session.act("open the billing page", "goto", value=f"{demo_server}/")
+
+    playbook = session.save("just open the page")
+
+    assert session.answered_from_the_last_read is False
+    assert [s for s in playbook.steps if s.action == READ_ACTION] == []
+
+
+def test_the_chosen_read_keeps_its_place_in_the_trail(
+    browser: Browser, store: CairnStore, demo_server: str
+) -> None:
+    """A read that happened before a click has to replay before that click. Putting it on
+    the end instead would answer from the wrong page."""
+    session = Session(browser=browser, store=store)
+    session.act("open the billing page", "goto", value=f"{demo_server}/")
+    session.read("text", ref=ref_for(session, "Sign in"))
+    session.act("go to the invoices", "goto", value=f"{demo_server}/invoices")
+
+    playbook = session.save("look then move")
+
+    kinds = [s.action for s in playbook.steps]
+    assert kinds.index(READ_ACTION) < len(kinds) - 1, kinds
+
+
+def test_a_whole_page_read_is_never_chosen_for_you(
+    browser: Browser, store: CairnStore, demo_server: str
+) -> None:
+    """Remembering a page dump hands back thousands of characters on every future run.
+    Marking one is the caller's business; nobody is opted into it."""
+    session = Session(browser=browser, store=store)
+    session.act("open the billing page", "goto", value=f"{demo_server}/")
+    session.read("page_text")
+
+    playbook = session.save("read the whole page")
+
+    assert session.answered_from_the_last_read is False
+    assert [s for s in playbook.steps if s.action == READ_ACTION] == []
+
+
+def test_any_way_of_naming_a_site_reaches_the_same_memory() -> None:
+    """The key IS the memory, so every spelling has to land on it.
+
+    Measured on 2026-09-05: ten runs on github.com, ten full explorations, not one warm
+    replay. The caller said `github.com/microsoft/playwright`, which has no scheme, so the
+    path was never stripped and it became a key of its own. Cairn learned the site under
+    `github.com` and looked it up under the long string, forever. Nothing failed; it was
+    only slow, which is why it survived a benchmark, a test suite and eight real sites.
+    """
+    from cairn.browser import domain_of
+
+    for spelling in (
+        "github.com",
+        "GitHub.com",
+        "github.com/microsoft/playwright",
+        "https://github.com/microsoft/playwright",
+        "http://github.com/microsoft/playwright?tab=readme#top",
+    ):
+        assert domain_of(spelling) == "github.com", spelling
+
+
+def test_a_port_still_separates_two_local_sites() -> None:
+    """Two demo servers on one machine are two different sites, and always were."""
+    from cairn.browser import domain_of
+
+    assert domain_of("http://127.0.0.1:5000/a") == "127.0.0.1:5000"
+    assert domain_of("localhost:8931/x") == "localhost:8931"
+
+
+# ----------------- the answer the caller already has (2026-09-05)
+#
+# The last hole, and the one no wording closed. On books.toscrape.com the price lives in
+# `.price_color`, which matches SEVEN elements, so the read is refused — correctly, since
+# guessing would report another book's price for ever. But the refusal NAMES the matches,
+# so the caller reads the value straight out of the refusal, answers the user, and never
+# makes a successful read. The trail then walks three pages and hands back nothing, on
+# every run, and the warm path costs as much as the cold one.
+#
+# The caller always has the value at that point. So `save` takes it, and Cairn does the
+# part it is good at: find which element says exactly that, and write down every durable
+# way of finding that element again.
+
+
+class TestSavingTheAnswerTheCallerAlreadyHas:
+    def test_a_trail_with_no_read_gets_its_answer_from_the_value_given(
+        self, browser: Browser, store: CairnStore, demo_server: str
+    ) -> None:
+        session = Session(browser=browser, store=store)
+        session.act("open the payments page", "goto", value=f"{demo_server}/payments")
+
+        playbook = session.save("what is the next charge", answer="₹ 18,400")
+
+        reads = [step for step in playbook.steps if step.action == READ_ACTION]
+        assert len(reads) == 1
+        assert reads[0].intent == "what is the next charge"
+
+    def test_and_it_is_stored_by_structure_not_by_the_text(
+        self, browser: Browser, store: CairnStore, demo_server: str
+    ) -> None:
+        """The value is a price or a count and will be different tomorrow. A locator that
+        says "the element reading ₹ 18,400" would miss the day it changes — which is the
+        day you most want to read it."""
+        session = Session(browser=browser, store=store)
+        session.act("open the payments page", "goto", value=f"{demo_server}/payments")
+
+        playbook = session.save("what is the next charge", answer="₹ 18,400")
+
+        found = [step for step in playbook.steps if step.action == READ_ACTION][0]
+        assert found.locators
+        assert not any("18,400" in locator.value for locator in found.locators)
+
+    def test_and_replay_answers_it_in_one_call(
+        self, browser: Browser, store: CairnStore, demo_server: str
+    ) -> None:
+        session = Session(browser=browser, store=store)
+        session.act("open the payments page", "goto", value=f"{demo_server}/payments")
+        session.save("what is the next charge", answer="₹ 18,400")
+
+        result = Executor(store, browser).run(
+            domain_of(demo_server), task="what is the next charge"
+        )
+
+        assert result.ok
+        assert result.answers["what is the next charge"] == "₹ 18,400"
+
+    def test_a_value_that_is_not_on_the_page_is_never_invented(
+        self, browser: Browser, store: CairnStore, demo_server: str
+    ) -> None:
+        """Recording an answer nobody can point at would be a stored lie."""
+        session = Session(browser=browser, store=store)
+        session.act("open the payments page", "goto", value=f"{demo_server}/payments")
+
+        playbook = session.save("what is the next charge", answer="£999.99")
+
+        assert session.answered_from_the_value_given == 0
+        assert [step for step in playbook.steps if step.action == READ_ACTION] == []
+
+    def test_a_read_the_caller_marked_is_never_overruled(
+        self, browser: Browser, store: CairnStore, demo_server: str
+    ) -> None:
+        """If the caller said which read is the answer, that is the answer. The value is
+        only ever a fallback for a trail that would otherwise have none."""
+        session = Session(browser=browser, store=store)
+        session.act("open the payments page", "goto", value=f"{demo_server}/payments")
+        session.read("text", ref="#cycle", remember=True, intent="the billing cycle")
+
+        playbook = session.save("what is the next charge", answer="₹ 18,400")
+
+        reads = [step for step in playbook.steps if step.action == READ_ACTION]
+        assert [step.intent for step in reads] == ["the billing cycle"]
+
+    def test_how_many_elements_said_it_is_reported(
+        self, browser: Browser, store: CairnStore, demo_server: str
+    ) -> None:
+        """A product page shows its price in the header and again in a tax table. That is
+        ordinary, not an error — but the caller has to be able to see it happened."""
+        session = Session(browser=browser, store=store)
+        session.act("open the payments page", "goto", value=f"{demo_server}/payments")
+
+        session.save("what is the next charge", answer="₹ 18,400")
+
+        assert session.answered_from_the_value_given >= 1

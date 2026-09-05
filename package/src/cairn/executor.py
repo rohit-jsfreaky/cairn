@@ -28,6 +28,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 from playwright.sync_api import Error as PlaywrightError
 
@@ -46,7 +47,16 @@ from .events import (
     StepPassed,
     StepStarted,
 )
-from .models import Locator, Playbook, Postcondition, RunMetrics, SiteMap, Step, href_path
+from .models import (
+    Locator,
+    Playbook,
+    Postcondition,
+    RunMetrics,
+    SiteMap,
+    Step,
+    href_path,
+    page_path,
+)
 from .operations import READ_ACTION, check_postcondition, controls_in
 from .secrets import MissingSecret
 from .secrets import resolve as resolve_secret
@@ -54,6 +64,11 @@ from .store import CairnStore
 
 # A step is considered past saving when this share of the trail is already broken.
 STALE_SHARE = 0.5
+
+# How long to let the site finish moving after a trail's LAST action before saying the run
+# is done. Spent only by trails that end by pressing something — a trail ending in a read
+# has nothing in flight — and only in full by a page that never stops calling home.
+SETTLE_AFTER_LAST_STEP_MS = 4000
 
 
 # Actions that put text into a field, so the value may be a secret held on this machine
@@ -113,6 +128,13 @@ class ReplayResult:
     """We were bounced to a sign-in page. Nothing is wrong with the trail; the session
     simply ran out and a person has to sign in again."""
 
+    wrong_place: bool = False
+    """The trail is fine; the page it starts from is not the page we are on.
+
+    Deliberately NOT `needs_repair`. Replaying a sign-in while already signed in lands on
+    the dashboard, where none of the controls is the one the step wants — and a repair
+    offered there would bind a working step to whatever happened to be lying around."""
+
     blocked: bool = False
     """A human check — a captcha — stood in the way. Deliberately NOT `needs_repair`:
     there is nothing to repair, and nothing an AI can do about it either. Reporting it as
@@ -149,6 +171,43 @@ class NeedsTask(NoTrailError):
         self.tasks = tasks
 
 
+def _said_nothing(step: Step) -> str:
+    """Why an empty answer is reported as a broken step rather than a quiet success."""
+    return (
+        f"{step.intent!r} used to answer and came back empty. The element is still there, "
+        f"so nothing looks broken — but the thing this step exists to read is gone or has "
+        f"moved to another element on the page."
+    )
+
+
+def _same_page(here: str, recorded: str) -> bool:
+    """Two addresses that mean the same page.
+
+    Ids are generalised away, so `/invoices/2026-09` and `/invoices/2026-10` are one page,
+    and a trailing slash is not a different place — a site that answers both
+    `/admin/sign-in` and `/admin/sign-in/` has not moved anything.
+    """
+    return page_path(here).rstrip("/") == page_path(recorded).rstrip("/")
+
+
+def _redirected_there(landed: str, asked_for: str) -> bool:
+    """Did we arrive, allowing for the site rewriting the address on the way?
+
+    Real sites canonicalise constantly: MDN answers /Web/API/fetch with
+    /Web/API/Window/fetch, others add a locale, a trailing slash or a www. The path we
+    asked for is then nowhere in the URL we landed on, and a strict path check calls a
+    perfectly good page a failure — while naming a `goto` step as the thing to repair,
+    which cannot be repaired, because a goto has no control to point at.
+
+    Being on the host we asked for is the honest signal that navigation worked. If the
+    page is actually wrong, the very next step fails on the thing it cannot find, which is
+    a far more useful place to be told.
+    """
+    if not asked_for:
+        return False
+    return bool(urlparse(landed).netloc) and urlparse(landed).netloc == urlparse(asked_for).netloc
+
+
 class Executor:
     """Replays a remembered trail. Reads memory, writes back what it learned."""
 
@@ -158,10 +217,14 @@ class Executor:
         browser: Browser,
         *,
         emitter: Emitter | None = None,
+        profile: str | None = None,
     ):
         self.store = store
         self.browser = browser
         self.events = emitter or Emitter()
+        # Which signed-in identity this replay is. Only secrets need it: one domain can
+        # have a customer, a vendor and an admin sign-in, each with its own password.
+        self.profile = profile
 
     _domain: str = ""
 
@@ -213,6 +276,30 @@ class Executor:
                 )
                 continue
 
+            # Decided BEFORE the repair request is built. Building it takes a snapshot of
+            # the wrong page and writes it into the site map, and emits RepairNeeded to
+            # every listener — all of it about a page this trail has nothing to do with.
+            if outcome.off_trail is not None:
+                belongs, here = outcome.off_trail
+                self.events.emit(
+                    StepFailed(index=step.index, intent=step.intent, reason=outcome.reason)
+                )
+                self._finish(playbook, metrics, started, succeeded=False)
+                return ReplayResult(
+                    ok=False,
+                    metrics=metrics,
+                    wrong_place=True,
+                    reason=(
+                        f"Step {step.index} ({step.intent!r}) belongs on {belongs}, and we "
+                        f"are on {here}. Nothing is broken — the trail's starting state is "
+                        f"not met. The commonest reason is that the work is already done: "
+                        f"replaying a sign-in while signed in lands on the dashboard. Do "
+                        f"NOT repair this step. There is nothing on this page for it to be "
+                        f"bound to, and binding it would destroy a working trail."
+                    ),
+                    saved_files=list(self.browser.saved_files),
+                )
+
             self.events.emit(
                 StepFailed(index=step.index, intent=step.intent, reason=outcome.reason)
             )
@@ -225,6 +312,12 @@ class Executor:
                     url=request.url,
                 )
             )
+            # Being on the wrong page looks exactly like a broken step, and this is the
+            # most dangerous of the lookalikes. Replaying "sign in as admin" while ALREADY
+            # signed in sends /admin/sign-in to /admin/dashboard, so there is no email
+            # field to fill — and the repair offered twenty-three dashboard controls, not
+            # one of them an email field. An agent following that instruction literally
+            # would bind the step to a nav link and destroy a trail that was never broken.
             # A human check looks exactly like a broken step too, and it is the one thing
             # neither Cairn nor a host AI can repair its way past. Say what happened and
             # stop, rather than handing back a page with no way through it.
@@ -274,6 +367,7 @@ class Executor:
                 saved_files=list(self.browser.saved_files),
             )
 
+        self._let_the_last_step_land(playbook)
         self._finish(playbook, metrics, started, succeeded=True)
         return ReplayResult(
             ok=True,
@@ -281,6 +375,29 @@ class Executor:
             saved_files=list(self.browser.saved_files),
             answers=dict(self.answers),
         )
+
+    def _let_the_last_step_land(self, playbook: Playbook) -> None:
+        """Do not hand back a finished run while the site is still moving.
+
+        A sign-in trail ends by pressing a button, and the app redirects a moment later.
+        Cairn used to return the instant the last step's check passed, so a caller reading
+        the URL straight afterwards saw the sign-in page and concluded the trail had
+        failed — then went and re-explored a site Cairn already knew, which is the exact
+        cost this whole project exists to remove.
+
+        Only for a trail that ends in an ACTION. Most trails end with a read — the answer —
+        and there is nothing in flight after one of those, so the common case and the
+        benchmark pay nothing at all.
+        """
+        if not playbook.steps or playbook.steps[-1].action == READ_ACTION:
+            return
+        self.browser.settle()
+        # Network quiet, not a timer. A sign-in that POSTs and then navigates takes as
+        # long as it takes, and any fixed number is a guess that is too short on a slow
+        # day — the first attempt at this waited 400ms and still handed back the sign-in
+        # page. `wait_until_quiet` returns the moment the site stops calling home, so
+        # the whole budget is only ever spent by a page that never goes quiet.
+        self.browser.wait_until_quiet(SETTLE_AFTER_LAST_STEP_MS)
 
     # ------------------------------------------------------------ one step
 
@@ -290,11 +407,19 @@ class Executor:
         tried: list[str] = field(default_factory=list)
         reason: str = ""
         duration_ms: int = 0
+        off_trail: tuple[str, str] | None = None
+        """Where this step belongs, and where we actually are — when they differ.
+
+        Set INSTEAD of trying the locators, so a replay in the wrong place marks nothing
+        as drift. That mattered more than the wrong repair it also prevents: every wrong-
+        place replay used to record a miss against a perfectly good locator, and a few of
+        them dragged the trail's health under half, at which point it was retired. The
+        trail destroyed itself for being replayed at the wrong moment."""
 
     def _value_for(self, step: Step, domain: str) -> str:
         """What to type. A secret is fetched from this machine, never from memory."""
         if step.secret:
-            return resolve_secret(domain, step.secret)
+            return resolve_secret(domain, step.secret, profile=self.profile)
         return step.value or ""
 
     def _replay_step(self, step: Step, *, start_url: str | None) -> _StepOutcome:
@@ -305,6 +430,12 @@ class Executor:
         # the step would report success having downloaded nothing.
         self.browser.last_download = None
         self.browser.last_download_path = None
+
+        # Are we even on the page this step belongs to? Asked FIRST, before a single
+        # locator is tried, because everything that follows assumes we are.
+        astray = self._off_trail(step)
+        if astray is not None:
+            return self._StepOutcome(off_trail=astray)
 
         if step.action == "goto":
             sent_elsewhere = bool(start_url) and step.index == 1
@@ -320,7 +451,11 @@ class Executor:
                 if sent_elsewhere
                 else step.postcondition
             )
-            passed = check_postcondition(self.browser, expected)
+            # A canonicalising redirect still counts as arriving. Walking into the WRONG
+            # page is caught by the next step, which knows which page it belongs on.
+            passed = check_postcondition(self.browser, expected) or _redirected_there(
+                self.browser.page.url, destination or ""
+            )
 
             elapsed = int((time.perf_counter() - began) * 1000)
             if passed:
@@ -332,9 +467,12 @@ class Executor:
         # A read of the whole page — its title, its url, the errors it logged — names no
         # element, so there is nothing to find and nothing that can go stale.
         if step.action == READ_ACTION and not step.locators:
-            self._read_answer(step, None)
-            step.record_hit()
+            spoke = self._read_answer(step, None)
             elapsed = int((time.perf_counter() - began) * 1000)
+            if not spoke:
+                step.record_miss()
+                return self._StepOutcome(reason=_said_nothing(step))
+            step.record_hit()
             return self._StepOutcome(matched_by="page", duration_ms=elapsed)
 
         outcome = self._StepOutcome()
@@ -356,7 +494,13 @@ class Executor:
         # Only worth a second look when NOTHING resolved. If something did resolve and the
         # action or the check then failed, that is real, and repeating it could click the
         # same button twice.
-        if not found_anything:
+        #
+        # A READ is the exception, and it is safe to be: reading twice changes nothing.
+        # A JavaScript-rendered page routinely hands over an element that is present and
+        # still empty — the cold run had a settle before it looked and replay did not, so
+        # the trail read a heading that was there and blank. Letting a read settle and try
+        # again is the difference between working on a modern site and not.
+        if not found_anything or step.action == READ_ACTION:
             self.browser.wait_until_quiet()
             outcome.tried.clear()
             settled, _, missed = self._try_locators(step, outcome, began=began)
@@ -388,14 +532,16 @@ class Executor:
             label = f"{locator.kind}:{locator.value}"
             outcome.tried.append(label)
 
-            target = self.browser.resolve(locator)
+            # A read only needs the element to BE there. Insisting it be visible is what
+            # made a hidden heading unreplayable on a page it had been recorded from.
+            target = self.browser.resolve(locator, visible=step.action != READ_ACTION)
             if target is None:
                 missed.append((locator, label))
                 continue
 
             found_anything = True
             try:
-                self._do(step, target, domain=self._domain)
+                spoke = self._do(step, target, domain=self._domain)
             except MissingSecret:
                 raise
             except PlaywrightError:
@@ -403,6 +549,14 @@ class Executor:
                 # action, a malformed step — has to surface as itself instead of being
                 # filed away as "this locator stopped matching", which is where a real
                 # fault would go to die quietly.
+                missed.append((locator, label))
+                continue
+
+            if not spoke:
+                # This locator found an element, and reading it produced nothing where it
+                # once produced an answer. Treat it as a MISS rather than a failure, so
+                # the next locator gets its turn — on a real product listing, where a
+                # stored link matched nine cards, that is exactly what finds the right one.
                 missed.append((locator, label))
                 continue
 
@@ -427,22 +581,50 @@ class Executor:
 
         return None, found_anything, missed
 
+    def _off_trail(self, step: Step) -> tuple[str, str] | None:
+        """Is this step being replayed somewhere it was never recorded?
+
+        A `goto` names its own destination, so it can never be in the wrong place. Every
+        other step was recorded on a particular page, and if we are not on it the step is
+        not broken — the trail's starting state simply is not met. Replaying "sign in as
+        admin" while already signed in is the everyday version: the site sends
+        /admin/sign-in to /admin/dashboard, and the email field the step wants was never
+        going to be there.
+
+        Trails saved before steps recorded their page have nothing to compare, and opt out.
+        """
+        if step.action == "goto" or not step.page:
+            return None
+        here = self.browser.page.url
+        if _same_page(here, step.page):
+            return None
+        return (step.page, here)
+
     def _blame(self, missed: list[tuple[Locator, str]], step: Step) -> None:
         """Write down the misses from the pass that actually decided the step."""
         for locator, label in missed:
             locator.record_miss()
             self.events.emit(DriftDetected(index=step.index, locator=label))
 
-    def _read_answer(self, step: Step, target) -> None:
-        """Replay a remembered read and keep what it said.
+    def _read_answer(self, step: Step, target) -> bool:
+        """Replay a remembered read and keep what it said. False if it said nothing.
 
         This is what makes a warm run *answer* rather than merely arrive. A trail for
         "how many open issues" is worth nothing if it navigates to the page and stops.
+
+        Emptiness is a failure when this read ANSWERED at the time it was learned. The
+        element still being there is not enough: on a real product listing a stored link
+        matched nine cards, replay read the one with no text, every check passed
+        and the run reported success while handing back "". A step that used to answer and
+        now does not is the page moving underneath the trail, which is drift, and drift is
+        repairable — silence is not.
         """
         kind, _, attribute = (step.value or "text").partition(":")
-        self.answers[step.intent] = reads.read(
+        answer = reads.read(
             kind, page=self.browser.page, target=target, attribute=attribute or None
         )
+        self.answers[step.intent] = answer
+        return not (step.answered and not str(answer).strip())
 
     def _dialog_changed(self, step: Step) -> str | None:
         """Did a confirm box appear whose wording is not what was recorded?
@@ -481,18 +663,18 @@ class Executor:
                 )
             )
 
-    def _do(self, step: Step, target, *, domain: str) -> None:
-        """Replay one recorded action.
+    def _do(self, step: Step, target, *, domain: str) -> bool:
+        """Replay one recorded action. False when a remembered read came back empty.
 
         The value comes from `_value_for`, so a password field is filled from this machine
         rather than from memory — memory never held it.
         """
         if step.action == READ_ACTION:
-            self._read_answer(step, target)
-            return
+            return self._read_answer(step, target)
 
         spec = actions.spec_for(step.action)
         value = self._value_for(step, domain) if spec.name in _TEXT_ENTRY else step.value
+        was = self.browser.page.url
         actions.perform(
             step.action,
             page=self.browser.page,
@@ -500,6 +682,12 @@ class Executor:
             value=value,
         )
         self.browser.settle()
+        # This step is recorded as one that changes the address. If it has not changed
+        # yet, the app may be doing it itself a moment later — which is how every
+        # single-page sidebar link works. Cheap when it was going to change anyway.
+        if step.postcondition.kind == "url_contains" and self.browser.page.url == was:
+            self.browser.await_url_change(was)
+        return True
 
     def _retire(self, playbook: Playbook, started: float) -> ReplayResult:
         """Throw the trail away, keep what is known about the site, and say so.

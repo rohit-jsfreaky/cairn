@@ -15,6 +15,14 @@ Everything here was chosen because it has broken a recorded flow in the wild:
 7. a link that opens a new tab
 8. a file input hidden behind a styled button
 9. a list that only grows as you scroll
+10. a menu that opens on `pointerdown` and ignores `click` — how Radix, and therefore
+    shadcn/ui, builds every dropdown menu. A synthetic click does nothing to it
+11. a link that calls `preventDefault` and navigates with `pushState` instead — every
+    React Router `<Link>` in every admin sidebar. The URL changes AFTER the handler
+    returns, so anything reading it too early sees no navigation at all
+12. a table row of icon-only buttons with no text and no aria-label — view, approve,
+    reject. The controls that matter most on an admin screen, and the ones a map built
+    out of names cannot hold at all
 
 Reachable at `/hard` on the demo site, so it is also a real URL to show on camera.
 """
@@ -110,6 +118,30 @@ HARD_PAGE = f"""<!doctype html>
 <input type="file" id="upload-input">
 <button id="upload-button">Attach a receipt</button>
 
+<!-- 10. A Radix-style menu: opens on pointerdown, not on click. -->
+<h2>10. Menu that only answers pointerdown</h2>
+<button id="pointer-menu-button" aria-haspopup="menu" aria-expanded="false">Row actions</button>
+<div id="pointer-menu" hidden>
+  <button role="menuitem" id="pointer-menu-edit">Edit row</button>
+  <button role="menuitem" id="pointer-menu-delete">Delete row</button>
+</div>
+
+<!-- 11. A React Router style link: a real anchor that never actually follows itself. -->
+<h2>11. Link that navigates by pushState</h2>
+<a href="/hard/orders" id="spa-link">Orders</a>
+<button id="spa-submit">Sign in</button>
+<p id="spa-where">nowhere yet</p>
+
+<!-- 12. Icon-only buttons: no text, no aria-label, nothing to be called by. -->
+<h2>12. Row actions with no accessible name</h2>
+<table id="rows"><tbody><tr>
+  <td>Vendor A</td>
+  <td>
+    <button class="icon"><svg width="12" height="12"><circle cx="6" cy="6" r="5"/></svg></button>
+    <button class="icon"><svg width="12" height="12"><rect width="10" height="10"/></svg></button>
+  </td>
+</tr></tbody></table>
+
 <!-- 9. Infinite scroll. -->
 <h2>9. Loads more only when you scroll</h2>
 <ul id="feed"></ul>
@@ -117,6 +149,40 @@ HARD_PAGE = f"""<!doctype html>
 
 <script>
   const log = (message) => {{ document.getElementById('log').textContent = message; }};
+
+  // 10. Radix's DropdownMenuTrigger opens on pointerdown. A `click` listener is
+  // deliberately NOT registered, so anything that dispatches a synthetic click without
+  // real pointer events leaves this menu shut — which is exactly the failure reported
+  // against a shadcn/ui table in the wild.
+  // 11. What every React Router <Link> does: swallow the anchor's own behaviour and
+  // change the URL itself. The pushState happens after the handler returns, so a caller
+  // that reads location too eagerly concludes nothing moved.
+  document.getElementById('spa-link').addEventListener('click', (event) => {{
+    event.preventDefault();
+    setTimeout(() => {{
+      history.pushState({{}}, '', '/hard/orders');
+      document.getElementById('spa-where').textContent = 'orders';
+      log('navigated by pushState');
+    }}, 30);
+  }});
+
+  // The same thing a sign-in submit does: no href to hint at it, and the app redirects
+  // a beat after the click. Nothing about the button says navigation is coming, which is
+  // why a run that returns the moment its last step passes looks like it failed.
+  document.getElementById('spa-submit').addEventListener('click', () => {{
+    setTimeout(() => {{
+      history.pushState({{}}, '', '/hard/dashboard');
+      document.getElementById('spa-where').textContent = 'dashboard';
+      log('signed in');
+    }}, 120);
+  }});
+
+  const pointerTrigger = document.getElementById('pointer-menu-button');
+  pointerTrigger.addEventListener('pointerdown', () => {{
+    document.getElementById('pointer-menu').hidden = false;
+    pointerTrigger.setAttribute('aria-expanded', 'true');
+    log('pointer menu opened');
+  }});
 
   // 5. The banner clears itself once accepted.
   document.getElementById('accept-cookies').addEventListener('click', () => {{

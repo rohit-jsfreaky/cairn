@@ -19,6 +19,7 @@ Never print to stdout — stdio is the MCP transport and a stray print corrupts 
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -35,11 +36,23 @@ from cairn.browser import (
     profile_named,
 )
 from cairn.executor import Executor, NeedsTask, NoTrailError
-from cairn.models import Locator, SiteKnowledge
-from cairn.operations import ActionFailed, Session
-from cairn.store import CairnStore, TrailAlreadyHere, best_match, slug
+from cairn.models import Locator, Playbook, SiteKnowledge
+from cairn.operations import READ_ACTION, ActionFailed, Session
+from cairn.store import (
+    CairnStore,
+    TrailAlreadyHere,
+    best_match,
+    rank_tasks,
+    shares_meaning,
+    slug,
+)
 from cairn.worker import BrowserWorker
 from mcp.server.fastmcp import FastMCP
+
+# Who was in use last, kept beside the profiles it names so an agent with its own
+# CAIRN_PROFILES_DIR keeps its own answer. A file, not a folder, so listing profiles
+# never sees it.
+ACTIVE_PROFILE_FILE = ".active"
 
 # How many controls to hand back from one look(). Enough to act on, small enough that
 # reading it is cheap — the whole point of the project is not paying for page dumps.
@@ -114,7 +127,9 @@ def _read_description() -> str:
         "Args:\n"
         "  kind: one of the names above.\n"
         "  ref: which element. Either a `ref` from kind='page', OR a CSS selector "
-        "you write yourself. A dashboard keeps its numbers in plain divs with no "
+        "you write yourself. A selector that matches SEVERAL elements is refused "
+        'rather than guessed at — add " >> nth=0" for the first of them, or '
+        '" >> nth=-1" for the last. A dashboard keeps its numbers in plain divs with no '
         "role, so those get no ref at all — name them with a selector such as "
         "\"[data-attr='visitors-tile'] .big\". Do that rather than page_text, which "
         "hands back the entire page for you to search through on every future run.\n"
@@ -147,6 +162,69 @@ def _pages_for(tools: CairnTools, domain: str) -> list[dict[str, Any]]:
     """
     site_map = tools.store.load_site_map(domain)
     return site_map.index()[:MAX_PAGES_LISTED] if site_map else []
+
+
+def _answer_note(
+    playbook: Playbook, guessed: bool, from_value: int, offered: bool
+) -> dict[str, str]:
+    """Say what the saved trail will hand back next time, when that is not obvious.
+
+    Two things go wrong quietly here, and both were measured on 2026-09-05.
+
+    A trail with NO read arrives at the page and stops. Every later run has to read the
+    page again, which is the whole cost this project removes — and it happens whenever the
+    caller answers from `cairn_read(kind="page")`, because the control list is exploration,
+    not a read of one value. Recording that list as a step would be worse: replay would
+    hand back the entire page every time. So the only honest move is to say it plainly and
+    say how to fix it.
+
+    A trail whose answer was CHOSEN rather than marked is fine, but only the caller knows
+    whether the right read was picked.
+    """
+    if from_value:
+        crowd = (
+            f" {from_value} elements on that page say exactly that, and the FIRST was "
+            f"kept — if that is the wrong one, read the right one with cairn_read and "
+            f"save again."
+            if from_value > 1
+            else ""
+        )
+        return {
+            "note": (
+                "Cairn found the value you gave on the page and stored where it lives, so "
+                "cairn_run hands it back from now on without reading anything." + crowd
+            )
+        }
+    if not any(step.action == READ_ACTION for step in playbook.steps):
+        if offered:
+            return {
+                "warning": (
+                    "The `answer` you gave matches no element on this page, so it was "
+                    "NOT recorded and this trail answers nothing. Check the text is "
+                    "exactly as the page shows it, or read the value with "
+                    "cairn_read(kind='text', ref=...) — a selector matching several "
+                    'elements needs " >> nth=0" on the end — then save again.'
+                )
+            }
+        return {
+            "warning": (
+                "This trail goes to the page and answers NOTHING. If you answered from "
+                "cairn_read(kind='page'), that is the control list, not a saved value — "
+                "every future run will have to read the page again and cost full price. "
+                "Read the value itself with cairn_read(kind='text', ref=...) using a ref "
+                "from the page list, then call cairn_save again."
+            )
+        }
+    if guessed:
+        return {
+            "note": (
+                "No read was marked as the answer, so the LAST thing you read was kept as "
+                "it — that is what cairn_run will hand back from now on. If a different "
+                "read was the real answer, read it again with remember=True and an "
+                "`intent`, then save once more."
+            )
+        }
+    return {}
 
 
 def _explore_advice(pages: list[dict[str, Any]]) -> str:
@@ -222,7 +300,9 @@ class CairnTools:
         # profiles never moves an existing sign-in.
         self.profile = profile if profile is not None else str(DEFAULT_PROFILE)
         self.profiles_dir = Path(profiles_dir) if profiles_dir else DEFAULT_PROFILES_DIR
-        self.active = DEFAULT_PROFILE_NAME
+        # Whoever was in use last time, not `default` — see `_remember_active`. Every
+        # reply names it, so coming back as somebody is never a surprise.
+        self.active = self._remembered_active()
         self.downloads = downloads
         self.headless = headless
         self._workers: dict[str, BrowserWorker] = {}
@@ -268,14 +348,56 @@ class CairnTools:
     def reset_session(self) -> None:
         self._sessions.pop(self.active, None)
 
+    @property
+    def secrets_profile(self) -> str:
+        """Which profile a password is looked up under. Always a name, `default` included.
+
+        This used to answer None for the default, to spare people who had never heard of
+        profiles from seeing one named in an error. That was a mistake: the missing-secret
+        message then said "your secrets file has no password for this site" when the
+        password WAS in the file, under `admin`, and the active profile had quietly gone
+        back to `default`. The lookup was right; the message hid the only fact that
+        explained it.
+
+        Naming `default` costs nothing — a domain-wide entry is still found, because
+        `secrets.resolve` falls back to it after the profile's own places.
+        """
+        return self.active
+
     def use(self, name: str) -> str:
-        """Work as a different profile from now on. Made on first use.
+        """Work as a different profile from now on. Made on first use, and remembered.
 
         Switching costs nothing: the browser it belongs to stays open and signed in, so
         going back and forth between roles is free.
         """
         self.active = name.strip() or DEFAULT_PROFILE_NAME
+        self._remember_active()
         return self.active
+
+    def _remember_active(self) -> None:
+        """Write down who is in use, so a restart does not silently become somebody else.
+
+        An MCP server restarts whenever its client does. Losing the profile there meant a
+        run that had been an admin for an hour came back as `default`, signed in to
+        nothing, with no message saying so — and the next failure looked like a broken
+        trail or a missing password.
+
+        It lives beside the profiles it names, so an agent given its own CAIRN_PROFILES_DIR
+        keeps its own answer. Failing to write it is not worth stopping a run for; the
+        cost is only that the next start says `default`.
+        """
+        with contextlib.suppress(OSError):
+            self.profiles_dir.mkdir(parents=True, exist_ok=True)
+            (self.profiles_dir / ACTIVE_PROFILE_FILE).write_text(self.active, encoding="utf-8")
+
+    def _remembered_active(self) -> str:
+        """Who was in use when this machine last ran. `default` if nobody has switched."""
+        marker = self.profiles_dir / ACTIVE_PROFILE_FILE
+        try:
+            name = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            return DEFAULT_PROFILE_NAME
+        return name or DEFAULT_PROFILE_NAME
 
     def known_profiles(self) -> list[dict[str, Any]]:
         """Every profile this machine has, and whether its browser is up."""
@@ -381,8 +503,12 @@ def build_server(
             "teaches Cairn the site so it is never explored again.\n\n"
             "If a site asks to sign in and you do not have the password, never guess and "
             "never automate a Google or SSO button. Call cairn_login, ask the user to sign "
-            "in in the window that opens, then call cairn_login_done. Cairn keeps one "
-            "browser profile, so they only ever have to do that once per site."
+            "in in the window that opens, then call cairn_login_done. A profile stays "
+            "signed in, so they only ever have to do that once per site.\n\n"
+            "If the site has more than one kind of user — a customer, a vendor, an admin — "
+            "give each one its own profile with cairn_profile BEFORE signing in. They then "
+            "stay signed in side by side and you switch between them instantly, instead of "
+            "signing out and back in. Every cairn_run reply names the profile it ran as."
         ),
     )
 
@@ -426,10 +552,12 @@ def build_server(
             url: Optional. Where the first step should go, if it differs from what was
                 learned — useful when the same site is reached by a different entry URL.
         """
-        key = domain_of(site) if "://" in site else site
+        key = domain_of(site)
         try:
             result = tools.worker.submit(
-                lambda browser: Executor(tools.store, browser).run(key, task=task, start_url=url)
+                lambda browser: Executor(tools.store, browser, profile=tools.secrets_profile).run(
+                    key, task=task, start_url=url
+                )
             )
         except NeedsTask as ambiguous:
             # NOT "unknown". Saying that made a host AI explore a site it already knew and
@@ -441,20 +569,50 @@ def build_server(
             # both halves: use a trail if one fits, and if none does, start from the map
             # rather than from nothing.
             pages = _pages_for(tools, key)
+            ranked = (
+                rank_tasks(task or "", ambiguous.tasks, domain=key) if task else ambiguous.tasks
+            )
+            nearest = ranked[0] if ranked else ""
+            # Ranking always returns EVERY task, so a non-empty list proves nothing — the
+            # top of it can still share not one word with what was asked for. Whether the
+            # exploration advice is withheld turns on whether the nearest trail is
+            # PLAUSIBLE, which is a different question and the one that matters.
+            fits = bool(task and nearest and shares_meaning(task, nearest, key))
             return {
                 "ok": False,
                 "known": True,
                 "needs_task": True,
                 "site": key,
-                "tasks": ambiguous.tasks,
+                "profile": tools.active,
+                "tasks": ranked,
+                "closest": nearest,
                 "pages_known": pages,
                 "message": str(ambiguous),
+                # This reply used to lose an argument with the model. The retry was
+                # conditional and hedged, and directly beneath it sat a concrete
+                # exploration plan with real page paths — so the model explored, every
+                # time, on a site whose answer was already in memory. Measured.
+                #
+                # So: the retry comes first, it is specific, it is priced, and the
+                # exploration advice is withheld while a trail plainly fits.
                 "next": (
-                    "Cairn already knows this site. If one of `tasks` is what you were "
-                    "asked for, call cairn_run again with `task` set to that exact "
-                    "wording and do NOT explore — the trail is already there. If none of "
-                    "them is, this is a NEW task on a site Cairn has walked before."
-                    + _explore_advice(pages)
+                    (
+                        f"Cairn knows this site. `tasks` is ordered closest-first — "
+                        f"{nearest!r} is the nearest to what you asked for. "
+                        f"DO THIS FIRST: call cairn_run again with task={nearest!r}, or "
+                        f"with no `task` at all. That costs one call and no browsing — "
+                        f"Cairn answers from memory before the browser even moves. "
+                        f"Only if none of `tasks` is the job you were asked for is this a "
+                        f"NEW task. Exploring costs dozens of calls, so be sure first."
+                    )
+                    if fits
+                    else (
+                        "Cairn knows this site but not this task by name. Look at `tasks`: "
+                        "if one of them is the job you were asked for, call cairn_run again "
+                        "with that wording — one call, no browsing. If none of them is, "
+                        "this is a NEW task on a site Cairn already knows, so explore it "
+                        "and call cairn_save when it works." + _explore_advice(pages)
+                    )
                 ),
             }
         except NoTrailError as unknown:
@@ -469,6 +627,7 @@ def build_server(
                     "ok": False,
                     "known": False,
                     "site": key,
+                    "profile": tools.active,
                     "message": str(unknown),
                     "site_facts": facts,
                     "pages_known": pages,
@@ -486,6 +645,7 @@ def build_server(
                     "ok": False,
                     "known": False,
                     "site": key,
+                    "profile": tools.active,
                     "message": str(unknown),
                     "site_facts": facts,
                     "pages_known": pages,
@@ -503,6 +663,7 @@ def build_server(
                 "ok": False,
                 "known": False,
                 "site": key,
+                "profile": tools.active,
                 "message": str(unknown),
                 "site_facts": facts,
                 "pages_known": pages,
@@ -532,12 +693,32 @@ def build_server(
         except Exception as failure:  # noqa: BLE001 - reported, not raised at the client
             return err(failure)
 
+        if result.wrong_place:
+            return {
+                "ok": False,
+                "known": True,
+                "wrong_place": True,
+                "site": key,
+                "profile": tools.active,
+                "message": result.reason,
+                "next": (
+                    "Do NOT call cairn_repair. Nothing is broken — this trail starts from "
+                    "a page you are not on, and the controls it needs are not here to be "
+                    "bound to. Binding one would destroy a working trail. "
+                    "If the trail is a sign-in and you are already signed in, the work is "
+                    "done: carry on with the task. Otherwise get to the trail's starting "
+                    "page first — sign out, or open the site fresh — and call cairn_run "
+                    "again."
+                ),
+            }
+
         if result.blocked:
             return {
                 "ok": False,
                 "known": True,
                 "blocked": True,
                 "site": key,
+                "profile": tools.active,
                 "message": result.reason,
                 "next": (
                     "STOP. Do not call cairn_repair and do not explore. A captcha is a "
@@ -553,6 +734,7 @@ def build_server(
                 "known": True,
                 "needs_login": True,
                 "site": key,
+                "profile": tools.active,
                 "message": result.reason,
                 "next": (
                     "Do not try to repair this and do not guess a password. Ask the user to "
@@ -569,6 +751,7 @@ def build_server(
                 "known": False,
                 "stale": True,
                 "site": key,
+                "profile": tools.active,
                 "message": result.reason,
                 "site_facts": result.site_facts,
                 "pages_known": pages,
@@ -589,6 +772,7 @@ def build_server(
                 "known": True,
                 "needs_repair": True,
                 "site": key,
+                "profile": tools.active,
                 "steps_replayed": result.metrics.steps_replayed,
                 "repair": repair,
                 "next": (
@@ -598,11 +782,19 @@ def build_server(
                 ),
             }
 
+        ran = result.metrics.task
+        # A fuzzy match must never be silent. Asking for one wording and getting another
+        # trail is fine — it is the whole point of matching by meaning — but the caller
+        # has to be able to see that it happened.
+        rephrased = bool(task) and task != ran
         return {
             "ok": result.ok,
             "known": True,
             "site": key,
-            "task": result.metrics.task,
+            "profile": tools.active,
+            "task": ran,
+            "matched_task": ran,
+            "asked_for": task,
             "steps_replayed": result.metrics.steps_replayed,
             "duration_ms": result.metrics.duration_ms,
             "model_calls": 0,
@@ -610,6 +802,30 @@ def build_server(
             "saved_files": result.saved_files,
             # What the remembered reads said. This is the answer — report it and stop.
             "answers": result.answers,
+            "next": (
+                (
+                    f"You asked for {task!r} and Cairn ran its trail {ran!r} — the same job "
+                    f"under different words. "
+                    if rephrased
+                    else ""
+                )
+                + (
+                    "Done. `answers` holds what the trail read: report it and stop. Do not "
+                    "open the page to check — the trail verified every step as it went."
+                    if result.answers
+                    # An answerless trail used to come back as a plain success, so the
+                    # caller read the page itself — every run, forever. Measured on
+                    # pypi.org: ten runs, ten page readings, ten replies saying "ok".
+                    # Some trails genuinely answer nothing (a download, a form), so this
+                    # says what happened and lets the caller decide, rather than failing.
+                    else "The trail ran and every step passed, but it reads no value, so "
+                    "`answers` is empty. If this task needs a value from the page, that is "
+                    "why: read it now with cairn_read(kind='text', ref=...) and call "
+                    "cairn_save again with the same task. One extra call today, and this "
+                    "site is one call forever after. If the task was only to DO something, "
+                    "nothing is wrong — it is done."
+                )
+            ),
         }
 
     @server.tool()
@@ -640,22 +856,22 @@ def build_server(
             css: A CSS selector instead, when nothing in the candidates fits.
             task: Which task, if the site has more than one trail.
         """
-        key = domain_of(site) if "://" in site else site
+        key = domain_of(site)
         if not ref and not css:
             return err("say which control to use: a `ref` from repair.candidates, or a `css`")
 
         try:
             if ref:
                 playbook = tools.worker.submit(
-                    lambda browser: Executor(tools.store, browser).repair_from_ref(
-                        key, step_index, ref, task=task
-                    )
+                    lambda browser: Executor(
+                        tools.store, browser, profile=tools.secrets_profile
+                    ).repair_from_ref(key, step_index, ref, task=task)
                 )
             else:
                 playbook = tools.worker.submit(
-                    lambda browser: Executor(tools.store, browser).apply_repair(
-                        key, step_index, Locator("css", css or ""), task=task
-                    )
+                    lambda browser: Executor(
+                        tools.store, browser, profile=tools.secrets_profile
+                    ).apply_repair(key, step_index, Locator("css", css or ""), task=task)
                 )
         except Exception as failure:  # noqa: BLE001
             return err(failure)
@@ -688,7 +904,7 @@ def build_server(
             site: The site, as a domain or full URL.
             task: Which task, if this site has more than one trail.
         """
-        key = domain_of(site) if "://" in site else site
+        key = domain_of(site)
         try:
             published = tools.store.share_trail(key, task)
         except Exception as failure:  # noqa: BLE001
@@ -721,7 +937,7 @@ def build_server(
                 worked for the most agents.
             force: Take it even though you have a trail here you already repaired.
         """
-        key = domain_of(site) if "://" in site else site
+        key = domain_of(site)
         try:
             borrowed = tools.store.borrow_trail(key, task, force=force)
         except TrailAlreadyHere as clash:
@@ -807,7 +1023,7 @@ def build_server(
                 "running this MCP server, then restart it."
             )
 
-        key = domain_of(site) if "://" in site else site
+        key = domain_of(site)
         try:
             listed = payments.browse(shop, key)
         except payments.ShopUnreachable as gone:
@@ -897,7 +1113,7 @@ def build_server(
         Args:
             site: Domain or full URL.
         """
-        key = domain_of(site) if "://" in site else site
+        key = domain_of(site)
         playbook = tools.store.load_playbook(key)
         facts = _facts_for(tools, key)
         if playbook is None:
@@ -936,7 +1152,7 @@ def build_server(
             path: One page, e.g. "/vendor/requests". Leave it out for the list of pages.
                 Ids are generalised, so "/invoices/2026-09" is stored as "/invoices/:id".
         """
-        key = domain_of(site) if "://" in site else site
+        key = domain_of(site)
         site_map = tools.store.load_site_map(key)
 
         if site_map is None or site_map.is_empty:
@@ -987,7 +1203,10 @@ def build_server(
                     # Pass this straight back as cairn_act's `ref`. Without it the map
                     # would only ever be a hint: you would know the button is there and
                     # still have to read the whole page to get a ref before pressing it.
-                    "use": f"role={control.role}|{control.name}",
+                    #
+                    # A control with no name of its own — the icon buttons in an admin
+                    # table's rows — is said by position instead, "role=button >> nth=3".
+                    "use": control.use,
                 }
                 for control in page.controls
             ],
@@ -1010,7 +1229,7 @@ def build_server(
         Args:
             site: Domain or full URL.
         """
-        key = domain_of(site) if "://" in site else site
+        key = domain_of(site)
         try:
             # Counted before it happens, because forgetting withdraws them.
             withdrawn = len(tools.store.my_offers_for(key))
@@ -1071,7 +1290,7 @@ def build_server(
             needs_2fa: True if it asks for a code or a second factor.
             account: Which account is used here, e.g. "finance@acme.com".
         """
-        key = domain_of(site) if "://" in site else site
+        key = domain_of(site)
         if fact is None and needs_login is None and needs_2fa is None and account is None:
             return err("give at least one of: fact, needs_login, needs_2fa, account")
 
@@ -1202,7 +1421,7 @@ def build_server(
         Args:
             site: The same site passed to cairn_login.
         """
-        key = domain_of(site) if "://" in site else site
+        key = domain_of(site)
         if not tools.signing_in:
             return err("no sign-in window is open — call cairn_login first")
 
@@ -1278,6 +1497,15 @@ def build_server(
                 "value": answer,
                 "remembered": remember,
             }
+            # A read is the moment the caller has its answer and is about to reply, which
+            # is exactly when it forgets to save. Measured on 2026-09-05: on one of four
+            # sites the whole task was explored, answered, and never written down, so all
+            # three runs paid full price. One sentence, at the only moment it lands.
+            if session.trace:
+                reply["next"] = (
+                    "If that answers the task, call cairn_save now — otherwise this site "
+                    "costs exactly as much again next time."
+                )
             # Said at the moment it happens, not only in the tool description. A host AI
             # remembered a whole-page read on PostHog despite the description, because the
             # tiles had no ref and page_text looked like the only way through.
@@ -1295,7 +1523,7 @@ def build_server(
             return err(failure)
 
     @server.tool()
-    def cairn_save(task: str) -> dict[str, Any]:
+    def cairn_save(task: str, answer: str | None = None) -> dict[str, Any]:
         """Remember everything you just did, so this task never needs exploring again.
 
         Call this once the task is finished. Cairn turns what you did into a trail with a
@@ -1308,14 +1536,26 @@ def build_server(
         cairn_act(action="restart_trail") and walk the task once, cleanly. The result below
         lists every step it kept, so check it says what you meant to do.
 
+        IF THE TASK HAD AN ANSWER, PASS IT AS `answer` — the exact text you are about to
+        report, copied character for character. Cairn finds which element on the page says
+        that, and stores every durable way of finding it again, so the answer comes back
+        on every future run. It costs you no extra call. Without it a trail can walk three
+        pages and hand back nothing, and every later run has to read the page all over
+        again. Text that matches no element is not recorded, and you are told so.
+
         Args:
             task: What was accomplished, in plain words, e.g. "download this month's
                 invoice".
+            answer: The value this task produced, exactly as it appears on the page — the
+                price, the count, the status. Leave it out only when the task produced no
+                value, such as a download or a form submission.
         """
 
         try:
             session = tools.session()
-            playbook = tools.worker.submit(lambda _browser: session.save(task))
+            playbook = tools.worker.submit(lambda _browser: session.save(task, answer=answer))
+            guessed = session.answered_from_the_last_read
+            from_value = session.answered_from_the_value_given
         except ActionFailed as refused:
             return err(refused)
         except Exception as failure:  # noqa: BLE001
@@ -1331,9 +1571,16 @@ def build_server(
             # PostHog a saved trail began "close the stuck context menu", which failed on
             # the first replay and took the whole run with it.
             "trail": [f"{s.index}. {s.action} — {s.intent}" for s in playbook.steps],
+            # Never silent, either way. If the answer step was chosen rather than marked,
+            # only the caller can tell whether the right read was picked — and if the trail
+            # answers nothing at all, saying so now is the difference between a one-call
+            # replay and paying to read the page forever.
+            **_answer_note(playbook, guessed, from_value, bool(answer)),
             "message": (
                 f"Learned {playbook.domain} in {len(playbook.steps)} steps. "
-                f"Next time, one cairn_run call does all of it."
+                f"Next time, one cairn_run call does all of it: "
+                f"cairn_run(site={playbook.domain!r}, task={playbook.task!r}). "
+                f"Close wording is matched too, so it does not have to be word for word."
             ),
         }
 
@@ -1367,7 +1614,10 @@ def run_stdio() -> None:
         db_path=os.environ.get("CAIRN_DB") or None,
     )
     who = os.environ.get("CAIRN_AGENT") or "the default agent"
-    log(f"ready as {who} — cairn_run first, explore only if the site is unknown")
+    # The profile is said out loud on every start, because it survives a restart now. A
+    # remembered identity that nobody announces is worse than one that resets.
+    using = server.cairn_tools.active  # type: ignore[attr-defined]
+    log(f"ready as {who}, profile {using!r} — cairn_run first, explore only if unknown")
     try:
         server.run()
     finally:

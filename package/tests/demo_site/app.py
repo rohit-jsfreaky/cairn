@@ -119,6 +119,18 @@ def page(title: str, body: str, *, variant: str, nav: bool = True) -> HTMLRespon
     )
 
 
+@app.get("/admin")
+def admin(request: Request, variant: str | None = Query(None)) -> RedirectResponse:
+    """A page that bounces you somewhere else, the way a sign-in page does once you are
+    already signed in.
+
+    Every real app does this, and it is what made Cairn offer to "repair" a healthy trail:
+    the trail opens the sign-in page, the site sends it to the dashboard instead, and the
+    step that wanted an email field finds a page that has none.
+    """
+    return RedirectResponse(link("/invoices", variant_of(request, variant)), status_code=303)
+
+
 @app.get("/payments", response_class=HTMLResponse)
 def payments(request: Request, variant: str | None = Query(None)) -> HTMLResponse:
     """A second destination, reachable from the nav on every signed-in page."""

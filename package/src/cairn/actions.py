@@ -414,7 +414,19 @@ def _set_checked(page: Page, t: _T, value: str | None, second: _T | None) -> Non
 
 
 def _select(page: Page, t: _T, value: str | None, second: _T | None) -> None:
-    t.select_option(**_select_options(value or ""))
+    try:
+        t.select_option(**_select_options(value or ""))
+    except PlaywrightError as not_a_dropdown:
+        # `select` only works on a real <select>. Half the dropdowns on the modern web are
+        # a button and a list of divs — Radix, Headless UI, anything built on them — and
+        # Playwright's own message for that says nothing about what to do instead.
+        if "not a <select>" not in str(not_a_dropdown).lower():
+            raise
+        raise ActionNeedsMore(
+            "this is not a real <select>, so there is nothing to choose from. It is a "
+            "custom dropdown built out of a button and a list — click the button, then "
+            "cairn_read(kind='page') and click the option you want."
+        ) from not_a_dropdown
 
 
 def _upload(page: Page, t: _T, value: str | None, second: _T | None) -> None:

@@ -35,6 +35,13 @@ class ReadSpec:
     returns: str
     needs_target: bool = True
     needs_attribute: bool = False
+    many: bool = False
+    """Does this read WANT more than one match?
+
+    Most reads are about one element, and a selector matching several is an ambiguity that
+    has to be refused — silently reading the first is how a caller ends up acting on the
+    wrong thing. Counting and reading every line are the exceptions: matching many is the
+    entire point of them."""
 
     def describe(self) -> str:
         parts = [f"{self.name} — {self.summary}", f"gives back {self.returns}"]
@@ -58,6 +65,7 @@ READS: dict[str, ReadSpec] = {
         "the words inside every matching element, for reading a table or a list in one go "
         "instead of one call per row",
         "a list of text",
+        many=True,
     ),
     "value": ReadSpec(
         "value",
@@ -94,6 +102,7 @@ READS: dict[str, ReadSpec] = {
         "count",
         'how many elements match — "there are 3 unpaid invoices"',
         "a number",
+        many=True,
     ),
     # ---- page level: these ask about the whole page, so they take no element -------
     "url": ReadSpec(
@@ -186,7 +195,11 @@ def _text(page: Page, t: PWLocator, attribute: str | None) -> str:
 
 
 def _all_text(page: Page, t: PWLocator, attribute: str | None) -> list[str]:
-    return [line.strip() for line in t.all_inner_texts()]
+    # `or ""` because a node can genuinely have no text — an `svg` inside a button is the
+    # normal case — and Playwright hands back None for those. Without the guard this
+    # crashed with "'NoneType' object has no attribute 'strip'" on a perfectly ordinary
+    # icon button, which tells the caller nothing about what to do next.
+    return [(line or "").strip() for line in t.all_inner_texts()]
 
 
 def _value(page: Page, t: PWLocator, attribute: str | None) -> str:

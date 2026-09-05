@@ -119,6 +119,13 @@ MAIN_TAB = "main"
 TAB_GRACE_MS = 3000
 TAB_POLL_MS = 50
 
+# A single-page app navigates by changing the URL itself, after its click handler has
+# returned. Nothing loads, so `domcontentloaded` fires instantly and tells you nothing —
+# every React Router <Link> in every admin sidebar behaves this way. Wait a little for the
+# address to catch up, and return the moment it does.
+SPA_NAV_GRACE_MS = 700
+SPA_NAV_POLL_MS = 25
+
 # How much visible page text one look() may return. Enough to read a heading, an amount
 # and an error message; not so much that a caller pays for the whole page every time.
 MAX_TEXT_CHARS = 1200
@@ -294,9 +301,18 @@ def profile_slug(name: str) -> str:
 
 
 def domain_of(url: str) -> str:
-    """The memory key for a site. Port included, so a local demo does not collide."""
-    parsed = urlparse(url)
-    return parsed.netloc or url
+    """The memory key for a site. Port included, so a local demo does not collide.
+
+    Anything that names a site has to land on the same key, because the key IS the memory.
+    `urlparse` alone only strips a path when there is a scheme in front of it, so
+    "github.com/microsoft/playwright" came back whole and became a key of its own. Cairn
+    then learned the site under "github.com", looked it up under the long string, and
+    found nothing — forever. Measured on 2026-09-05: ten runs on github.com, ten full
+    explorations, not one warm replay. It was invisible because everything still worked;
+    it was only slow.
+    """
+    parsed = urlparse(url if "://" in url else f"//{url}")
+    return (parsed.netloc or url).lower()
 
 
 class NoSuchElement(RuntimeError):
@@ -911,6 +927,49 @@ class Browser:
                 setattr(element, key, value)
         return element
 
+    def showing(self, text: str) -> tuple[int, Element | None]:
+        """How many elements say exactly this, and the first of them, described durably.
+
+        Used at save time to answer a question Cairn cannot otherwise answer: the caller
+        HAS the value — it is about to report it — but Cairn never saw a read that produced
+        it, so the trail would arrive at the page and hand back nothing.
+
+        Located by the text once, and then stored by STRUCTURE. The text is a price or a
+        count and will be different tomorrow; the css path, the test id and the role will
+        not. Storing "the element that said £45.17" would stop working the moment the price
+        moved, which is the whole reason that value is worth reading.
+
+        Several matches are reported rather than refused, and that is a deliberate
+        difference from an ambiguous CLICK, which is always refused. A wrong click does
+        something — it presses another row's delete button — while every element matching
+        this text shows the SAME value today. A product page listing its price twice, once
+        in the header and once in a tax table, is the ordinary case. The caller is told how
+        many matched and which one was kept, so a wrong pick is visible and correctable;
+        refusing instead would leave the trail answering nothing, which is certain to be
+        useless rather than merely possibly wrong.
+        """
+        try:
+            found = self.page.get_by_text(text, exact=True)
+            matches = found.count()
+        except PlaywrightError:
+            return 0, None
+        if matches == 0:
+            return 0, None
+
+        described = self._describe_locator(found.first)
+        if not described:
+            return matches, None
+
+        # The text is deliberately NOT kept as the element's name. `distill` builds a
+        # locator out of the name, so keeping it would store "the element reading £45.17"
+        # — a locator that misses the moment the price changes, which is the day the value
+        # is most worth reading. Structure only: css, test id, role, label.
+        element = Element(ref="", role="", name="")
+        for key, value in described.items():
+            if value is not None and hasattr(element, key):
+                setattr(element, key, value)
+        return matches, element
+
     def readable_text(self, limit: int = MAX_TEXT_CHARS) -> str:
         """What the page says, tidied and cut short.
 
@@ -928,20 +987,33 @@ class Browser:
         trimmed = cut[:edge] if edge > limit // 2 else cut
         return trimmed + newline + "…"
 
-    def resolve(self, locator: Locator, *, timeout_ms: int = LOCATOR_WAIT_MS) -> PWLocator | None:
+    def resolve(
+        self,
+        locator: Locator,
+        *,
+        timeout_ms: int = LOCATOR_WAIT_MS,
+        visible: bool = True,
+    ) -> PWLocator | None:
         """Turn a stored locator back into something on the page, or None if it misses.
 
         Returning None rather than raising is deliberate: a miss is normal and expected
         information here, not an error. It is how drift gets noticed.
+
+        `visible=False` is for READING. You cannot click what you cannot see, but you can
+        certainly read it — and requiring visibility for reads made a trail that could be
+        RECORDED impossible to REPLAY. FastAPI's documentation hides its `h1` and draws a
+        styled title elsewhere: the cold run read "FastAPI" happily, and every replay of
+        that same step reported the trail had gone stale.
         """
         try:
             found = self._to_playwright(locator)
             if found is None:
                 return None
-            # "visible", not "attached". Attached only means the element exists in the
-            # page — which is already true while it is sliding into place and cannot yet
-            # receive a click. Visible also waits for it to stop moving.
-            found.first.wait_for(state="visible", timeout=timeout_ms)
+            # "visible", not "attached", for anything being acted on. Attached only means
+            # the element exists in the page — which is already true while it is sliding
+            # into place and cannot yet receive a click. Visible also waits for it to
+            # stop moving.
+            found.first.wait_for(state="visible" if visible else "attached", timeout=timeout_ms)
             return found.first
         except PlaywrightError:
             # Playwright's own base error, which a timeout is a subclass of. This used to
@@ -996,7 +1068,7 @@ class Browser:
             return page.locator(f'[href="{path}"], [href^="{path}?"], [href^="{path}#"]')
         return None
 
-    def locate(self, element: Element) -> PWLocator:
+    def locate(self, element: Element, *, one: bool = True) -> PWLocator:
         """Turn an element into something Playwright can act on.
 
         `aria-ref` resolves through shadow roots and across frame boundaries on its own, so
@@ -1006,15 +1078,42 @@ class Browser:
 
         An element named by a CSS selector instead is resolved by that selector. Dashboards
         keep their numbers in plain `div`s with no role, which get no ref at all.
+
+        `one=False` hands back EVERY match instead of the first. Only `count` and
+        `all_text` ask for that, and they have to: taking `.first` for them meant `count`
+        could never answer anything but 0 or 1, while its own description promised "how
+        many elements match — there are 3 unpaid invoices". It had been quietly answering
+        1 for every list on every page.
         """
         if element.found_by is not None:
             found = self._to_playwright(element.found_by)
             if found is None:
                 raise NoSuchElement(f"{element.ref} is not something this page can be asked for")
-            return found.first
+            return found.first if one else found
         if element.selector:
-            return self.page.locator(element.selector).first
+            everything = self.page.locator(element.selector)
+            return everything.first if one else everything
         return self.page.locator(f"aria-ref={element.ref}").first
+
+    def await_url_change(self, was: str, timeout_ms: int = SPA_NAV_GRACE_MS) -> bool:
+        """Give a client-side navigation time to show up in the address bar.
+
+        A single-page app calls `preventDefault` and then `pushState`, so the URL changes
+        AFTER the handler returns. Reading it immediately says nothing moved — which is how
+        Cairn came to report `navigated: false` on a link that had worked perfectly, and
+        would have recorded the old address as that step's postcondition, wrong for ever.
+
+        Returns the moment the address differs, so a click that genuinely goes nowhere is
+        the only one that pays the whole wait.
+        """
+        waited = 0
+        while waited < timeout_ms:
+            if self.page.url != was:
+                return True
+            with suppress(PlaywrightError):
+                self.page.wait_for_timeout(SPA_NAV_POLL_MS)
+            waited += SPA_NAV_POLL_MS
+        return self.page.url != was
 
     def settle(self) -> None:
         """Let the page catch up after an action.
@@ -1052,7 +1151,13 @@ class Browser:
         """
         for marker in CAPTCHA_MARKERS:
             try:
-                if self.page.locator(marker).count() > 0:
+                found = self.page.locator(marker)
+                # VISIBLE, not merely present. Plenty of ordinary pages carry a dormant
+                # captcha widget for a newsletter box or a contact form — the FastAPI docs
+                # do — and it sits in the markup invisible, blocking nothing. Counting
+                # those made Cairn announce a human check and refuse to work on a site that
+                # was answering perfectly well.
+                if any(found.nth(index).is_visible() for index in range(found.count())):
                     return marker
             except PlaywrightError:
                 # A closed or navigating page cannot be asked. That is not a captcha.

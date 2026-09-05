@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import asyncio
 
+from cairn.browser import domain_of
+from cairn.models import Playbook
+
 from helpers import call, teach_the_site
 
 # The demo site's front page is the login screen; these are on it.
@@ -51,6 +54,28 @@ class TestTheMapIsOffered:
 
         assert answer["needs_task"] is True
         assert "If none of them is" in answer["next"]
+
+    def test_but_it_is_withheld_when_a_saved_trail_plainly_fits(self, mcp_server, demo_server):
+        """The advice that made Cairn lose its own benchmark.
+
+        Measured on 2026-09-05: the model called cairn_run, was not given a trail by name,
+        and read the page itself — because directly under a hedged retry sat a concrete
+        exploration plan with real page paths. It is the longer and more actionable of the
+        two, so it won. It is now withheld while a trail plausibly matches.
+
+        "Plausibly" is doing real work here: ranking returns EVERY task, so the mere
+        presence of candidates says nothing about whether any of them is the job.
+        """
+        teach_the_site(mcp_server, demo_server)
+        mcp_server.cairn_tools.store.save_playbook(
+            Playbook(domain=domain_of(demo_server), task="download last month's invoice")
+        )
+
+        answer = call(mcp_server, "cairn_run", site=demo_server, task="download the invoice")
+
+        assert answer["needs_task"] is True
+        assert "DO THIS FIRST" in answer["next"]
+        assert "ALREADY" not in answer["next"], "the escape hatch must not be offered here"
 
     def test_a_site_nobody_walked_offers_an_empty_map_rather_than_a_lie(self, mcp_server):
         answer = call(mcp_server, "cairn_run", site="never.visited.example.com")

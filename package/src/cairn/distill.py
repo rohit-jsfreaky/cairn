@@ -28,6 +28,10 @@ def distill(trace: list[TraceEntry], *, domain: str, task: str) -> Playbook:
             secret=entry.secret,
             postcondition=postcondition_for(entry),
             locators=locators_for(entry),
+            # Where this step happened. A goto has no "before", and needs none: it names
+            # its own destination.
+            page=href_path(entry.url_before) if entry.url_before else "",
+            answered=bool(entry.answer),
             dialog_message=(entry.dialog or {}).get("message"),
             dialog_choice=(entry.dialog or {}).get("choice"),
         )
@@ -52,7 +56,15 @@ def postcondition_for(entry: TraceEntry) -> Postcondition:
         return Postcondition("download", entry.download)
 
     if entry.navigated or entry.action == "goto":
-        return Postcondition("url_contains", href_path(entry.url_after))
+        # Where we LANDED, and — for a goto — where we asked to go, which are not always
+        # the same place. MDN answers /Web/API/fetch with /Web/API/Window/fetch; sites add
+        # a locale, a trailing slash, a canonical host. Recording only the landing spot
+        # made a trail whose own `goto` could not satisfy its own check: replay went to
+        # the URL it was told to, the site redirected, and the step was called broken on a
+        # page that was perfectly correct. Either one arriving is arrival.
+        asked = href_path(entry.value) if entry.action == "goto" and entry.value else None
+        landed = href_path(entry.url_after)
+        return Postcondition("url_contains", landed, target=asked if asked != landed else None)
 
     if entry.action == "fill" and entry.element is not None:
         # Nothing visibly changes when you type, so assert the field is still there.

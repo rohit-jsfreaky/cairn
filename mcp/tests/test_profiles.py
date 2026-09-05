@@ -125,3 +125,60 @@ class TestMemoryIsNotSplit:
 
         assert mapped["ok"] is True
         assert any(row["path"] == "/" for row in mapped["pages"])
+
+
+class TestRememberingWhoIsInUse:
+    """An MCP server restarts whenever its client does.
+
+    The active profile used to reset to `default` there, silently. An agent that had been
+    an admin for an hour came back signed in to nothing, and the next failure looked like
+    a broken trail or a missing password instead of the identity change it was.
+    """
+
+    def test_a_restart_comes_back_as_the_same_profile(self, tmp_path):
+        first = build_server(
+            db_path=str(tmp_path / "memory.db"),
+            headless=True,
+            profile=str(tmp_path / "default-profile"),
+            profiles_dir=str(tmp_path / "profiles"),
+        )
+        call(first, "cairn_profile", name="admin")
+        first.cairn_tools.close()
+
+        second = build_server(
+            db_path=str(tmp_path / "memory.db"),
+            headless=True,
+            profile=str(tmp_path / "default-profile"),
+            profiles_dir=str(tmp_path / "profiles"),
+        )
+        try:
+            assert call(second, "cairn_profile")["active"] == "admin"
+        finally:
+            second.cairn_tools.close()
+
+    def test_a_machine_where_nobody_ever_switched_is_still_the_default(self, server):
+        assert call(server, "cairn_profile")["active"] == DEFAULT_PROFILE_NAME
+
+    def test_the_note_of_who_is_in_use_is_not_itself_a_profile(self, server):
+        call(server, "cairn_profile", name="admin")
+
+        listed = call(server, "cairn_profile")["profiles"]
+
+        assert all(not row["name"].startswith(".") for row in listed)
+
+
+class TestEveryAnswerSaysWhichIdentity:
+    """Naming it is what makes a remembered profile safe rather than surprising."""
+
+    def test_a_password_lookup_names_the_profile_even_when_it_is_the_default(self, server):
+        assert server.cairn_tools.secrets_profile == DEFAULT_PROFILE_NAME
+
+    def test_and_the_one_that_was_switched_to(self, server):
+        call(server, "cairn_profile", name="vendor")
+
+        assert server.cairn_tools.secrets_profile == "vendor"
+
+    def test_a_run_on_an_unknown_site_still_says_who_it_ran_as(self, server, demo_server):
+        answer = call(server, "cairn_run", site=demo_server)
+
+        assert answer["profile"] == DEFAULT_PROFILE_NAME

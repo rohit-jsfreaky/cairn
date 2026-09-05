@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from cairn.browser import domain_of
 
-from helpers import call, teach_the_site
+from helpers import call, ref_named, teach_the_site
 
 
 class TestAnUnknownSite:
@@ -401,3 +401,110 @@ class TestDomainKeying:
         by_domain = call(mcp_server, "cairn_show", site=domain_of(demo_server))
 
         assert by_url["site"] == by_domain["site"]
+
+
+class TestATrailThatAnswersNothing:
+    """Saying nothing here costs the caller full price on every future run.
+
+    Measured 2026-09-05 on pypi.org: the model answered from cairn_read(kind="page") — the
+    control list — so the saved trail had no read in it. Ten runs, ten page readings, and
+    every reply said "ok".
+    """
+
+    def test_the_reply_says_so_plainly(self, mcp_server, demo_server):
+        call(mcp_server, "cairn_act", intent="open it", action="goto", value=f"{demo_server}/")
+        call(mcp_server, "cairn_read", kind="page")
+
+        saved = call(mcp_server, "cairn_save", task="just look at the page")
+
+        assert saved["ok"] is True
+        assert "answers NOTHING" in saved["warning"]
+        assert "cairn_read(kind='text'" in saved["warning"]
+
+    def test_and_a_trail_that_does_answer_is_not_nagged(self, mcp_server, demo_server):
+        call(mcp_server, "cairn_act", intent="open it", action="goto", value=f"{demo_server}/")
+        page = call(mcp_server, "cairn_read", kind="page")
+        call(
+            mcp_server,
+            "cairn_read",
+            kind="text",
+            ref=ref_named(page, "Sign in"),
+            remember=True,
+            intent="the button text",
+        )
+
+        saved = call(mcp_server, "cairn_save", task="read the button")
+
+        assert "warning" not in saved
+        assert "note" not in saved
+
+    def test_and_replaying_it_does_not_look_like_a_finished_answer(self, mcp_server, demo_server):
+        """The reply that cost pypi.org ten page readings in ten runs.
+
+        `ok: True` with an empty `answers` reads as "done" to a caller, so it went and read
+        the page itself — and did so again on every later run, because nothing in the reply
+        ever said why it was empty or how to fix it.
+        """
+        call(mcp_server, "cairn_act", intent="open it", action="goto", value=f"{demo_server}/")
+        call(mcp_server, "cairn_read", kind="page")
+        call(mcp_server, "cairn_save", task="just look at the page")
+
+        again = call(mcp_server, "cairn_run", site=demo_server, task="just look at the page")
+
+        assert again["ok"] is True
+        assert again["answers"] == {}
+        assert "reads no value" in again["next"]
+        assert "cairn_save again" in again["next"]
+
+    def test_but_a_trail_that_answers_is_told_to_stop(self, mcp_server, demo_server):
+        """The opposite mistake would be worse: telling a caller with the answer in hand to
+        go and read the page."""
+        call(mcp_server, "cairn_act", intent="open it", action="goto", value=f"{demo_server}/")
+        page = call(mcp_server, "cairn_read", kind="page")
+        call(
+            mcp_server,
+            "cairn_read",
+            kind="text",
+            ref=ref_named(page, "Sign in"),
+            remember=True,
+            intent="the button text",
+        )
+        call(mcp_server, "cairn_save", task="read the button")
+
+        done = call(mcp_server, "cairn_run", site=demo_server, task="read the button")
+
+        assert done["answers"]
+        assert "report it and stop" in done["next"]
+        assert "reads no value" not in done["next"]
+
+    def test_but_the_caller_can_hand_over_the_answer_it_already_has(self, mcp_server, demo_server):
+        """The fix for the case no wording closed: the read was refused for ambiguity, the
+        caller read the value out of the refusal, and the trail would have saved empty."""
+        call(
+            mcp_server,
+            "cairn_act",
+            intent="open payments",
+            action="goto",
+            value=f"{demo_server}/payments",
+        )
+
+        saved = call(mcp_server, "cairn_save", task="what is the next charge", answer="₹ 18,400")
+
+        assert "warning" not in saved
+        assert "stored where it lives" in saved["note"]
+
+        again = call(mcp_server, "cairn_run", site=demo_server, task="what is the next charge")
+        assert again["answers"] == {"what is the next charge": "₹ 18,400"}
+
+    def test_and_a_value_that_is_not_on_the_page_is_refused_out_loud(self, mcp_server, demo_server):
+        call(
+            mcp_server,
+            "cairn_act",
+            intent="open payments",
+            action="goto",
+            value=f"{demo_server}/payments",
+        )
+
+        saved = call(mcp_server, "cairn_save", task="what is the next charge", answer="£999.99")
+
+        assert "matches no element" in saved["warning"]

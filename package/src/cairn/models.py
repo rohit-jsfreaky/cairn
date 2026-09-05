@@ -48,6 +48,7 @@ _MISS_WEIGHT = 2.0  # a miss is worse news than a hit is good news
 # is database-wide. An unbounded map would not just spoil itself — it would stop trails,
 # site knowledge and the commons from being written at all, mid-run. These two numbers
 # are the guard, and a test holds them.
+#
 # Forty pages and fifty controls each measures at ~230 KB of JSON, and Sibyl's search
 # index roughly doubles that. Sixty pages was the first guess; it made one site cost
 # nearly half a megabyte, which is a lot to spend on one site inside a 5 MB database.
@@ -319,6 +320,26 @@ class Step:
     running the replay. A password in a memory file is a password in a backup, a sync
     folder and a support ticket."""
 
+    page: str = ""
+    """The page this step was performed on, as a path.
+
+    Without it, replay cannot tell "this control moved" from "we are on a completely
+    different page" — and the second one, reported as the first, invites a repair that
+    binds a healthy step to whatever happened to be lying around. Replaying a sign-in
+    while already signed in lands on a dashboard and offered twenty-three nav links and
+    stat tiles as candidates for an email field.
+
+    Empty on trails saved before this existed, which simply opt out of the check."""
+
+    answered: bool = False
+    """Did this READ produce something when the trail was learned?
+
+    A remembered read exists to hand back an answer. If it answered once and comes back
+    empty now, the page has moved under it — and because the element still resolved, every
+    check passed and the run reported success while returning nothing at all. Seen on a
+    real shop, where a stored link locator matched nine product cards and replay read the
+    empty one."""
+
     hits: int = 0
     misses: int = 0
     """This step's own record, used only when it has no locators to speak for it.
@@ -399,6 +420,8 @@ class Step:
             "locators": [loc.to_dict() for loc in self.locators],
             "repairs": self.repairs,
             "secret": self.secret,
+            "page": self.page,
+            "answered": self.answered,
             "hits": self.hits,
             "misses": self.misses,
             "dialog_message": self.dialog_message,
@@ -417,6 +440,8 @@ class Step:
             locators=[Locator.from_dict(loc) for loc in raw.get("locators", [])],
             repairs=raw.get("repairs", 0),
             secret=raw.get("secret"),
+            page=raw.get("page", ""),
+            answered=raw.get("answered", False),
             hits=raw.get("hits", 0),
             misses=raw.get("misses", 0),
             dialog_message=raw.get("dialog_message"),
@@ -710,16 +735,36 @@ class Control:
     role: str
     name: str
     href: str | None = None
+    nth: int | None = None
+    """Which one, among the controls of this role on the page that have NO name.
+
+    Icon-only buttons — view, approve, reject, suspend — are exactly the controls that
+    matter on an admin table, and they carry no text and no aria-label. Leaving them out
+    meant the map listed everything except the things worth clicking, on the very page it
+    was meant to save the most work on. Position is a weak way to name something, and far
+    better than the control being absent."""
     last_seen: str = field(default_factory=utc_now)
 
     @property
-    def identity(self) -> tuple[str, str]:
-        """What makes two sightings the same control. Role and name, never position."""
-        return (self.role, self.name)
+    def identity(self) -> tuple[str, str, int]:
+        """What makes two sightings the same control.
+
+        Role and name for anything with a name. For the unnamed, position has to stand in,
+        or every icon button on a page would be the same control as every other.
+        """
+        return (self.role, self.name, -1 if self.name else (self.nth or 0))
+
+    @property
+    def use(self) -> str:
+        """How to say this control to `cairn_act`, as its `ref`."""
+        if self.name:
+            return f"role={self.role}|{self.name}"
+        return f"role={self.role} >> nth={self.nth or 0}"
 
     def describe(self) -> str:
         """One line, for a person or an AI reading the map."""
-        return f"{self.role} {self.name!r}" + (f" -> {self.href}" if self.href else "")
+        called = f"{self.name!r}" if self.name else f"(unnamed #{self.nth or 0})"
+        return f"{self.role} {called}" + (f" -> {self.href}" if self.href else "")
 
 
 @dataclass
@@ -791,6 +836,7 @@ class PageMemory:
                 {
                     "role": control.role,
                     "name": control.name,
+                    **({"nth": control.nth} if control.nth is not None else {}),
                     **({"href": control.href} if control.href else {}),
                     **(
                         {"last_seen": control.last_seen}
@@ -813,6 +859,7 @@ class PageMemory:
                     role=control["role"],
                     name=control["name"],
                     href=control.get("href"),
+                    nth=control.get("nth"),
                     last_seen=control.get("last_seen", last_seen),
                 )
                 for control in raw.get("controls", [])

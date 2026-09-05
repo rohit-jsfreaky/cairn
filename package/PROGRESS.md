@@ -1150,3 +1150,438 @@ is the biggest remaining gap between "demo" and "product".
   index had the MCP package at 0.2.1 while still offering the engine at 0.2.0, so a fresh
   install in that window paired 0.2.1 with 0.2.0. Correct — the floor allows it — just
   without the tab fix. It settles on its own; `--no-cache-dir` forces the point.
+
+- **2026-09-05 (five bugs from Rohit's marketplace, and two worse ones they led to)** — the
+  first real product feedback from outside the demo site, and it was worth more than a week
+  of our own testing.
+
+  **The dangerous one, and he was right to rank it first.** `_element_by_selector` never
+  checked how many elements a selector matched, and `Browser.locate` took `.first`. On a
+  table with a menu button in every row, `button[aria-haspopup="menu"]` matched all of them,
+  Cairn clicked row one's, and returned **ok: true**. He spent eight calls hunting a fault in
+  his own application that was never there. Worse than a wrong answer: it reports success, so
+  nothing downstream doubts it, and `cairn_save` then writes it into a trail to be replayed
+  for ever. Cairn now refuses, says how many matched, names the first few by their text, and
+  names the ways to mean one of them.
+
+  **The Radix bug was that bug.** He reported that Cairn could not open a shadcn/ui dropdown
+  and suspected our click was synthetic — not sending the `pointerdown` Radix opens on. Rather
+  than special-case it, the hard page gained a menu that opens ONLY on `pointerdown` and
+  ignores `click` entirely. **Cairn opens it.** So the clicks were always real pointer events;
+  what actually happened is that his selector matched a menu button in every row, Cairn opened
+  the first, and he inspected a different one. Two tests pin the pointer behaviour forever now.
+
+  **`count` could only ever return 1.** Found while fixing the `all_text` crash. `locate()`
+  took `.first`, so `count` and `all_text` had always been looking at a single element — while
+  `count`'s own description promised "how many elements match — there are 3 unpaid invoices".
+  It had been quietly answering 1 for every list on every page, and nothing caught it because
+  no test ever counted something there was more than one of. `locate(one=False)` now, driven
+  by a `many` flag on the two ReadSpecs that mean it.
+
+  **The crash** — `all_text` on a node with no text at all, which is what an `svg` inside an
+  icon button is. Playwright answers None; `.strip()` did the rest.
+
+  **The two papercuts.** A plain control NAME as a `ref` now gets told it can be said as
+  `"role=button|Next: Document Submission"` — which really works, since the map made that
+  form real. And `select` on a Radix combobox now says it is not a real `<select>` and to
+  click the button instead, rather than passing Playwright's message straight through.
+
+  **It immediately caught six of our own selectors.** The 26-site benchmark was reading the
+  first of many on six sites — `.titleline a` matched sixty elements on Hacker News. Exactly
+  the bug he reported, in our own benchmark, invisible until the check existed. They now say
+  `>> nth=0` out loud, and the error message names that form first because it is the shortest
+  one that works on any selector.
+
+  13 new tests in `test_ambiguous_selectors.py`, plus 2 on the hard page.
+
+- **2026-09-05 (two more from the marketplace: the SPA link, and the nameless buttons)** —
+  both reported as blocking, and the first one was not the bug it looked like.
+
+  **`click` "did not follow" React Router links.** Reported as: every form of `ref` returns
+  `ok: true` with `navigated: false`, the URL never changes, and the same selector in plain
+  Playwright navigates fine. The obvious reading was that our click was synthetic and never
+  reached React — the same theory as the Radix report, and wrong for the same reason.
+
+  A React Router `<Link>` went into the hard page: a real anchor that calls `preventDefault`
+  and then `pushState`. Measured:
+
+  ```
+  cairn click -> navigated: False, url: .../hard
+  url straight after : .../hard
+  url 300ms later    : .../hard/orders
+  ```
+
+  **The click always worked.** `settle()` waits for `domcontentloaded`, which fires instantly
+  on a single-page app because no document ever loads, so Cairn read the address before the
+  app had changed it. Not merely a false report either: a saved step would have recorded the
+  OLD url as its postcondition and been wrong for ever after.
+
+  `Browser.await_url_change` now gives a client-side navigation a bounded moment to show up —
+  on the cold path when an anchor was clicked and has not moved, and on replay when the step
+  is recorded as one that changes the address. It returns the instant the URL differs, so the
+  only click that pays the wait is one that genuinely goes nowhere.
+
+  **The map dropped every control without an accessible name.** That filter was mine, with a
+  reason written next to it: "something with no name cannot be found by name later". True, and
+  beside the point. On an admin table the unnamed controls ARE the ones that matter — view,
+  approve, reject, suspend, all icon-only `<button>`s with no text and no aria-label. The map
+  listed the sidebar and the search box and none of the things anybody wanted to click, on
+  precisely the page it was supposed to save the most work on.
+
+  They are kept now, numbered by position among controls of the same role, and they come back
+  as a ref that works: `role=button >> nth=3`. Same spelling Playwright uses, so one form
+  covers a stored control and a plain CSS selector alike, and `_as_stored_locator` reads the
+  suffix into `Locator.nth`, which `_to_playwright` already applied. Rohit's own framing was
+  the right one: imperfect, and far better than the control being absent.
+
+  **The hard page gained both shapes**, and neither existed before — which is exactly why
+  neither bug was ever caught here. It now also carries a table row of icon-only buttons.
+
+  One more found on the way: `remember_overlay` crashed on a session with no store, though
+  `Session(browser)` is a supported shape. The overlay is still cleared; only the writing down
+  is skipped.
+
+  17 tests in `test_ambiguous_selectors.py`.
+
+- **2026-09-05 (three more from the marketplace: the label ref, one password per role, and
+  a run that finished too early)**
+
+  **A label as a `ref` still said nothing useful.** `"Export Vendors CSV"` is perfectly
+  valid CSS — three tag names in a descendant chain — so Playwright does not reject it, it
+  simply finds nothing, and the message stopped at "nothing on this page matches". True,
+  useless, and silent about the one form that works. It now recognises a label (words with
+  spaces and no selector punctuation) and answers with `role=button|Export Vendors CSV`. A
+  real selector that finds nothing is deliberately NOT lectured about labels.
+
+  **One password per domain, on a site with three sign-ins.** The marketplace has a
+  customer, a vendor and an admin login on one host, each with its own password. Two of
+  three saved trails could never have replayed, and the third would have tried the wrong
+  password against a real login — which is how an account gets locked out. Secrets are now
+  scoped by PROFILE, which already exists per role, with the plain domain entry as the
+  fallback so every secrets file anybody already has keeps working:
+
+  ```json
+  {"marketplace.example.com": {"admin": {"password": "..."}, "password": "fallback"}}
+  ```
+
+  `CAIRN_SECRET_<DOMAIN>_<PROFILE>_<FIELD>` does the same from the environment, and the
+  missing-secret message names the profile it wants. One thing worth its own test: a
+  profile BLOCK is never mistaken for a value, so `{"admin": {...}}` is another profile and
+  not a secret called "admin".
+
+  **A run returned while the site was still moving.** Replaying an admin sign-in worked —
+  four steps, `ok: true` — and a caller reading the URL immediately afterwards saw the
+  sign-in page and concluded the trail had failed, then went off to re-explore a site Cairn
+  already knew. Exactly the cost this project exists to remove.
+
+  The shape is specific and extremely common: the last step is a submit BUTTON. A button
+  has no href, so nothing at learn time knew the address was about to change, and the
+  step's own check is about the element rather than the URL — it passes on the page it
+  started on. A trail ending in an ACTION now lets the site finish landing before the run
+  reports done; a trail ending in a READ, which is most of them and all of the benchmark,
+  waits for nothing at all.
+
+  The hard page gained that shape too — a submit button that redirects a beat later — so it
+  can never regress. It now carries twelve awkward things, five of them added today by real
+  reports.
+
+  One of my own on the way: the deletion gate forbids the literal word "shop" anywhere in
+  `executor.py`, comments included, and I had written it in a comment about a product
+  listing. The guard is right to be that blunt — reworded rather than loosened.
+
+  11 new tests across `test_secrets.py`, `test_ambiguous_selectors.py` and the new
+  `test_run_finishes.py`.
+
+- **2026-09-05 (the head-to-head, and the benchmark catching ME at the same trick)**
+
+  Six sites, one task each, driven through three MCP servers as a host AI would drive them.
+  Pinned versions so a rerun measures the same thing: `@playwright/mcp@0.0.80`,
+  `chrome-devtools-mcp@1.8.0`.
+
+  ```
+  tool                    run   calls   bytes to model   seconds   sites ok
+  cairn                     1      24          114,493      42.1   6
+  cairn                     2       6            3,604       4.0   6
+  chrome-devtools-mcp       1      18          851,729      33.7   6
+  chrome-devtools-mcp       2      18          851,721      27.9   6
+  playwright-mcp            1      18          891,799      35.7   6
+  playwright-mcp            2      18          891,845      36.4   6
+  ```
+
+  **The first run costs Cairn MORE calls than either of them** — 24 against 18 — because
+  Cairn also saves the trail. That is the honest shape of the trade and it belongs in the
+  table: you pay a fourth call once, and the second run costs one.
+
+  Neither of the others is trying to remember anything, and the table says so. Their second
+  run is their first run, to the byte.
+
+  **The first version of this benchmark was false, and false in OUR favour.** Every Chrome
+  DevTools call had failed — `pageId` is required there and I had not passed it — and each
+  returned a 488-byte error. Because an error message is text, the run reported six
+  successful sites at **2,928 bytes**, which would have made the tool that never ran look
+  like the cheapest thing in the table. Publishing it would have been indefensible: the
+  first person to rerun it catches us.
+
+  It is the same failure Cairn itself was fixed for twice today — reporting success for a
+  result that is not there — and it landed in the measuring instrument. An `isError` reply
+  now counts as no answer at all.
+
+  Playwright MCP's numbers were checked individually and are genuine: `pkg.go.dev` really
+  does cost it 506,608 bytes for one reading, against Cairn's 615 on a warm run.
+
+- **2026-09-05 (the fixes the benchmark and the marketplace forced — matching, wrong page,
+  passwords)**
+
+  Three things were wrong, and two of them were worse than what was reported.
+
+  **1. Naming the task was WORSE than saying nothing.** `load_playbook` had one clause,
+  `if len(keys) == 1 and not task`. A site with exactly one trail replayed perfectly when
+  the caller named no task and refused when it named one that did not match word for word
+  — while the tool description tells the caller to name the task. Cairn steered its own
+  callers into the path that fails, which is why the head-to-head benchmark showed it
+  costing MORE than tools that remember nothing.
+
+  On top of that, `_overlap` divided by the length of the REQUEST, so every extra word
+  lowered the score, the site's own name included:
+
+  ```
+  trail saved as "read the first quote"
+    "tell me the first quote"                                        0.67  matched
+    "what is the quote at the top of the page"                       0.33  missed
+    "find the top quote on quotes.toscrape.com and who said it"      0.11  missed
+  ```
+
+  Now: scored against the SHORTER of the two, the domain's own words stripped from the
+  request first, and a lone trail runs whenever the request shares any meaningful word with
+  it (`shares_meaning`). Sharing NO word is still a refusal — "cancel my subscription" must
+  never run "count open issues". The legacy bare-domain fallback got the same guard; it
+  used to hand back its trail whatever was asked for.
+
+  **2. A wrong-page replay was quietly destroying healthy trails.** Replaying "sign in as
+  admin" while already signed in lands on the dashboard, and Cairn offered twenty-three
+  dashboard controls to bind the email step to. That was the reported half. The unreported
+  half was worse: the decision came AFTER the locators had been tried, so every such replay
+  recorded a miss against a perfectly good locator. A few of those drag health under half,
+  `is_stale` turns true, and the trail is retired.
+
+  A step now records the page it was performed on (`Step.page`, filled by `distill` from
+  `url_before`), and replay compares pages BEFORE it touches a locator, before `_blame` and
+  before `_repair_request`. The earlier attempt keyed on the `goto` URL check, which misses
+  almost every real trail: `url_contains` is a substring test, so a trail starting at a bare
+  host matches every page on that site, and a trail that navigates by CLICKING never went
+  through that branch at all. Old trails load with an empty page and opt out.
+
+  **3. `_places_to_look` could type the wrong password into a real login.** The order was
+  profile env, PLAIN env, profile file, plain file — so an unprofiled environment variable
+  outranked the profile's own entry in `secrets.json`. With `CAIRN_SECRET_SHOP_PASSWORD`
+  exported for the customer sign-in and the admin password in the file, running as `admin`
+  typed the CUSTOMER's password into the admin login, silently. That is the account lockout
+  profiles exist to prevent, and the docstring promised the opposite order. Both of a
+  profile's places now come before both domain-wide ones.
+
+  The missing-password message also names the profile — `default` included, which it used
+  to hide — and names the sibling profiles that DO have that secret. The password was
+  usually in the file all along, under `admin`, and the message sent people to edit a file
+  that was already correct.
+
+  Also: `cairn run` prints something for `wrong_place` instead of exiting 1 in silence
+  (exit code 5), and the CLI names the profile even when it is `default`.
+
+  647 tests, ruff clean. The deletion gate caught me a second time — the word "requests" in
+  two new comments — and the comments were reworded rather than the guard loosened.
+
+- **2026-09-05 (why Cairn was losing its own benchmark: the trail had no answer in it)**
+
+  The head-to-head was re-run after the matching fixes and Cairn still cost more than tools
+  that remember nothing. The per-site trace said why, and it was not matching at all:
+
+  ```
+  quotes.toscrape.com  run 1  cairn_run, act, act, read, read, save
+                       run 2  cairn_run, READ, READ      <- read the page again
+  developer.mozilla    run 1  cairn_run, act, act, read  <- never saved at all
+  news.ycombinator     run 3  cairn_run                  <- "reported success but
+                                                             returned no title data"
+  ```
+
+  `Session.read` only wrote a read into the trail when the caller passed `remember=True`.
+  The read tool's description says so in capitals — "REMEMBER THE READ THAT IS THE ANSWER"
+  — and across twelve real runs the caller passed it **zero times**. So every trail walked
+  to the page and stopped. The warm run replayed the navigation, answered nothing, and the
+  model read the page itself, which is the entire cost Cairn exists to remove.
+
+  Telling it harder was never going to work. An unmarked read is now kept aside, and `save`
+  puts it into the trail ONLY if the trail would otherwise answer nothing at all. A marked
+  read is obeyed exactly and never second-guessed; a task that read nothing still saves no
+  read; a whole-page dump is never chosen for anybody, because remembering one hands back
+  thousands of characters on every future run. The chosen read goes back where it happened,
+  not on the end, so a read before a click still replays before that click. `cairn_save`
+  says when it chose, because only the caller knows whether it picked the right one.
+
+  **Measured after the fix — ONE sweep, all rows from the same run** (4 public sites, one
+  real Claude session per tool, Sonnet 5 / medium, three runs each, 2026-09-05, $3.20):
+
+  ```
+  tool                   run  tool calls      tokens   seconds  sites ok
+  cairn                    1          28   1,195,197     142.0      4
+  cairn                    2          14     645,305      84.5      4
+  cairn                    3           8     415,287      75.0      4
+  playwright-mcp           1          16     709,717      79.1      4
+  playwright-mcp           2          16     712,668      88.6      4
+  playwright-mcp           3          16     709,708      92.1      4
+  chrome-devtools-mcp      1          16     727,238      93.4      4
+  chrome-devtools-mcp      2          16     726,224      90.9      4
+  chrome-devtools-mcp      3          16     726,772     106.2      4
+  ```
+
+  Cairn pays more on run 1 — it is also learning the site — and less from then on. **A
+  learned site costs exactly 2 calls, and one of those two is this harness loading the tool
+  schema, not Cairn.** The other tools pay that same call and it is in their numbers too.
+  Neither of them is trying to remember anything, and their rows say so: run 3 is run 1.
+
+  Before this fix the same sweep read 29 / 20 / 18 and Cairn was LOSING on every run.
+
+  **The one blemish, recorded because it is real:** on `news.ycombinator.com` the model
+  explored, answered, and never called `cairn_save`, so run 1 taught Cairn nothing and run 2
+  had to explore again — that is the whole of the 14. It saved on run 2 and run 3 cost 2
+  calls. `cairn_read` now says at the moment of the answer that the site costs full price
+  again unless it saves, and 3 of 4 sites saved first time. The remaining lever is to have
+  the `unknown` reply hand back the exact `cairn_save(task=...)` call, since `cairn_run`
+  already knows the task string. Not done, because changing it would make this table
+  describe code that no longer exists — it needs its own sweep.
+
+  653 engine tests, ruff clean.
+
+- **2026-09-05 (ten repeats on one real page — the curve, not the snapshot)**
+
+  Rohit's objection to the three-run table was correct and worth writing down: add the three
+  runs up and Cairn totals 50 calls against 48 and 48. Three runs is barely past the paying
+  part, so the sum hides the entire point of a cache.
+
+  So: `pkg.go.dev/net/http`, one task, **ten runs**, each a fresh `claude -p` session with
+  nothing carried over but Cairn's memory. `pkg.go.dev` rather than `quotes.toscrape.com`
+  on purpose — a real documentation page, not a scraping practice site. On the toy site
+  every tool is cheap and every curve is flat.
+
+  ```
+  run   cairn (cum)        playwright-mcp (cum)   chrome-devtools-mcp (cum)
+   1     7    7    294k     5    5    208k         6    6    248k
+   2     2    9    398k     5   10    415k         5   11    461k
+   3     2   11    492k     7   17    697k         5   16    673k
+   4     2   13    595k     7   24    978k         5   21    886k
+   5     2   15    699k     4   28  1,148k        10   31  1,282k
+   6     2   17    803k     5   33  1,356k         9   40  1,655k
+   7     2   19    907k     5   38  1,563k         5   45  1,865k
+   8     2   21  1,011k     8   46  1,881k         5   50  2,078k
+   9     2   23  1,114k     4   50  2,051k         5   55  2,290k
+  10     2   25  1,218k     5   55  2,263k         5   60  2,500k
+  ```
+
+  **Cairn is ahead from run 2 onward, on both measures.** Over ten runs: 25 calls against
+  55 and 60 (**55% and 58% fewer**), 1.22M tokens against 2.26M and 2.50M (**46% and 51%
+  fewer**). The payback is one run, not four — on a real page the other tools cost 5 to 8
+  calls per run, not 3.
+
+  The second finding is one nobody was looking for. **Cairn's nine warm runs landed between
+  93,513 and 103,887 tokens — 10k apart.** Playwright's ten runs ranged over 147k and Chrome
+  DevTools' over 187k, with 10-call and 9-call outliers where the model got confused by a
+  page it had already read nine times. Replay is deterministic Python, so the same task
+  costs the same every time. A tool whose price you can predict is a different product from
+  one whose price you cannot.
+
+  Cost: $1.95. Written to `benchmark-repeat10-pkg-go-dev.json`. The benchmark now takes
+  `--site`, `--runs` and `--out`, because every sweep used to overwrite the same file — a
+  single-site re-measure silently replaced a full head-to-head that cost real money.
+
+- **2026-09-05 (six sites, ten runs each — Cairn won ONE, and that is the useful part)**
+
+  Five more sites were added to the ten-repeat sweep. The list and the tasks were fixed
+  BEFORE any of them was measured, and every one is written down here whatever it says.
+
+  ```
+  site               cairn          playwright     chrome-devtools   cairn per run
+  pkg.go.dev         25  1.22M      55  2.26M      60  2.50M         7 then 2
+  docs.python.org    26  1.28M      20  1.02M      30  1.40M         8 then 2
+  en.wikipedia.org   29  1.38M      20  1.02M      45  1.96M         6, 7, then 2
+  pypi.org           46  2.02M      30  1.47M      30  1.51M         7 then 4
+  huggingface.co     43  1.91M      30  1.51M      30  1.55M         6,7,4,5,2,6,4,2,3,4
+  github.com         70  2.95M      51  2.16M      60  2.53M         7 every run
+  ```
+
+  **Two of those rows are bugs, and the benchmark is what found them.**
+
+  1. **`github.com` never went warm in ten runs.** The caller said
+     `github.com/microsoft/playwright` — no scheme — so `urlparse` never stripped the path
+     and the whole string became a memory key of its own. Cairn learned the site under
+     `github.com`, looked it up under the long string, and found nothing. Every run. It
+     never errored; it was only slow, which is how it survived 650 tests, an earlier
+     benchmark and eight real sites. `domain_of` now strips a path with or without a
+     scheme and lowercases, and all ten call sites in the MCP server go through it instead
+     of their own `if "://" in site` test.
+  2. **`pypi.org` sat at 4 calls because its trail answers nothing.** The model answered
+     from `cairn_read(kind="page")`, which is the control list — exploration, not a value.
+     Recording that list as a step would be worse (replay would hand back the whole page),
+     so `cairn_save` now says plainly that the trail answers nothing and how to fix it,
+     instead of replying "ok". `huggingface.co` looks like the same thing plus a save that
+     only sometimes happened.
+
+  **The third finding is not a bug and matters more.** On `docs.python.org` and
+  `en.wikipedia.org` Cairn worked perfectly — 2 calls on every warm run — and still lost,
+  because Playwright MCP also costs 2 calls there: its `navigate` reply already contains
+  the heading. There is nothing for memory to save. Cairn pays 6-8 calls to learn the site
+  and never earns it back.
+
+  So, said plainly: **on "open one page, read one visible fact", Cairn is not cheaper.** It
+  wins when the page is big — `pkg.go.dev`, 25 calls against 55 — and it should win much
+  more on multi-step work, which is what it is for and what none of these six tasks
+  measure. That belongs in the README as a limit, not hidden.
+
+  655 engine tests, 38 MCP server tests, ruff clean. The six JSON files are kept per site.
+  The numbers above were measured BEFORE both fixes and must be re-measured before they are
+  published anywhere.
+
+- **2026-09-05 (measuring the right thing at last — 52% fewer calls)**
+
+  Rohit's objection to the six-site table was right: adding the runs up gave 188 against
+  206, and nobody changes tools for 9%. The cause was the benchmark, not the product. Every
+  task in it was "open one page, read one line" — the cheapest thing a browser tool does,
+  two or three calls for anybody, so memory had almost nothing to save. **The benchmark was
+  built so that our ceiling was their floor.**
+
+  Real work has steps. Three multi-step journeys were added to `benchmark_agents.py`
+  (`--journeys`), each done TEN times, each run a fresh Claude session:
+
+  ```
+  journey (10 runs)      cairn          playwright     chrome-devtools
+  github.com             28  1.36M      83  3.38M      33  1.68M
+  quotes.toscrape.com    27  1.32M      60  2.57M      60  2.62M
+  books.toscrape.com     41  1.93M      56  2.77M      56  2.81M
+  ALL THREE              96  4.61M     199  8.73M     149  7.10M
+  ```
+
+  **52% fewer tool calls and 47% fewer tokens than Playwright MCP; 36% and 35% fewer than
+  Chrome DevTools MCP. 30 of 30 correct for every tool.** Cairn wins every journey — the
+  same comparison that was a tie on one-page lookups.
+
+  The shape is the point: `10, 2, 2, 2, 2, 2, 2, 2, 2, 2`. A learned journey costs two
+  calls whether it is two steps or twenty, while Playwright's github row reads
+  `8, 8, 18, 7, 9, 9, 7, 6, 5, 6` — it never gets cheaper, because it is not trying to.
+
+  **What unlocked it was one last bug, and it was subtle.** On books.toscrape.com the price
+  lives in `.price_color`, which matches SEVEN elements, so the read was refused —
+  correctly. But the refusal LISTS the matches to be helpful, so the model read the answer
+  out of the error message, reported it, and never made a successful read. The trail saved
+  with no answer in it, and every run re-read the page. Our own helpful error removed the
+  reason to try again, which is why no wording fixed it.
+
+  `cairn_save` now takes `answer` — the value the caller is about to report. Cairn finds
+  which element says exactly that and stores every durable way of finding it again. Zero
+  extra calls for the caller. The text is deliberately NOT kept as a locator (a test caught
+  me storing "the element reading £45.17", which would miss the day the price moves), and a
+  value matching no element is never recorded. Where several elements say it — a price in a
+  header and again in a tax table — the first is kept and the reply says how many matched;
+  an ambiguous CLICK is still always refused, because a wrong click does something.
+
+  Verified with a real model before spending: books.toscrape.com run 2 went from 7 calls to
+  2. The sweep cost $9.10, and every session ran at below-normal priority with a cooldown,
+  so the machine stayed usable.
+
