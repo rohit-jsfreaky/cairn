@@ -19,6 +19,7 @@
     "postcss": "^8.5.26",
     "react": "^19",
     "react-dom": "^19",
+    "recharts": "^3.10.1",
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {

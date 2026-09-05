@@ -81,6 +81,52 @@ cairn show github.com                    # the route, step by step
 cairn forget --site github.com           # make it forget
 ```
 
+## Against browsers that do not remember
+
+The same job, done **10 times**, each time in a brand-new chat. Three real multi-step tasks,
+three MCP browser tools, **90 fresh Claude sessions** (Sonnet 5, medium). Versions pinned so
+a rerun measures the same thing: `@playwright/mcp@0.0.80`, `chrome-devtools-mcp@1.8.0`.
+
+| the task, done 10 times | **Cairn** | Playwright MCP | Chrome DevTools MCP |
+|---|---|---|---|
+| open a GitHub repo → Issues → count them | **28 calls · 1.4M tokens** | 83 · 3.4M | 33 · 1.7M |
+| open an author's page → read their birth date | **27 calls · 1.3M tokens** | 60 · 2.6M | 60 · 2.6M |
+| open a category → open a book → read the price | **41 calls · 1.9M tokens** | 56 · 2.8M | 56 · 2.8M |
+| **all three** | **96 calls · 4.6M tokens** | 199 · 8.7M | 149 · 7.1M |
+
+**52% fewer tool calls and 47% fewer tokens than Playwright MCP.** Against Chrome DevTools
+MCP: 36% fewer calls, 35% fewer tokens. All three tools answered correctly 30 times out of 30.
+
+The totals hide the shape, which is the actual point. The GitHub task, run by run:
+
+```
+run              1   2   3   4   5   6   7   8   9  10
+Cairn           10   2   2   2   2   2   2   2   2   2
+Playwright MCP   8   8  18   7   9   9   7   6   5   6
+```
+
+Cairn pays once to learn the route, then costs two calls — **however many steps that route
+has**. The others start from nothing every time, because they are not trying to remember.
+
+Run it yourself:
+
+```bash
+python package/benchmark_agents.py --journeys --runs 10
+```
+
+Two things this table should also tell you, because they are true:
+
+- **Cairn costs the most on run 1.** It does the job *and* learns the site. That is the trade.
+- **On a single page with a one-line answer, Cairn is not cheaper.** Opening one page and
+  reading one line costs everybody two or three calls, and there is nothing left for memory
+  to save. Measured over six such lookups the same comparison is 188 calls against 206 — a
+  true number and a useless one, which is why the tasks above have steps in them.
+
+A separate finding, measured over the same ten runs: Cairn's warm runs cost between **93k and
+104k tokens** each, while Playwright MCP's ranged over 147k and Chrome DevTools MCP's over
+187k. Replay is deterministic Python with no thinking in it, so the same task costs the same
+every time.
+
 ## How it works
 
 Two paths, and only the first one costs anything.

@@ -12,7 +12,9 @@ source.
 
 Next.js 16 (App Router) · TypeScript strict · Tailwind ·
 fonts via @fontsource: **Shantell Sans** (display) + **Hanken Grotesk** (body) ·
-icons: **@phosphor-icons/react** · charts: tiny inline SVG, no chart library.
+icons: **@phosphor-icons/react** · charts: inline SVG for decoration, **recharts** for the
+one chart a reader is meant to interrogate (the benchmark curve — Rohit's call, 2026-09-05:
+a number people are asked to believe should be hoverable).
 
 ## Rohit's locked design rules (do not argue with these)
 
