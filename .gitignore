@@ -73,3 +73,7 @@ Thumbs.db
 desktop.ini
 .idea/
 *.swp
+
+# --- Launch working copy ---
+# Draft posts, kept out of the repo: they are marketing working notes, not product.
+LAUNCH-POSTS.md

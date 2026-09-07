@@ -165,6 +165,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     for saved in result.saved_files:
         print(f"  {TICK} saved  {saved}")
 
+    if result.already_done:
+        # Not a failure and must not read as one. Asking to sign in when you are already
+        # signed in is a task that is finished, and exiting non-zero on it sends whatever
+        # is driving Cairn looking for a bug that is not there.
+        print()
+        print(f"  {TICK} {result.reason}")
+        print()
+        return 0
+
     if result.wrong_place:
         # Printed nothing at all before this, so the run just ended with exit code 1 and
         # no explanation — the one outcome where the trail is perfectly fine.

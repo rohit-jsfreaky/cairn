@@ -159,7 +159,7 @@ class TestControlsWithNoNameOfTheirOwn:
 
 class TestWhenNothingMatchesAtAll:
     def test_a_label_is_told_the_form_that_would_have_worked(self, hard: Session) -> None:
-        """"Export Vendors CSV" is valid CSS — three tag names in a descendant chain — so
+        """ "Export Vendors CSV" is valid CSS — three tag names in a descendant chain — so
         Playwright does not reject it, it just finds nothing. The old message stopped at
         "nothing on this page matches": true, useless, and silent about the one form that
         works. A visible label is the most natural thing to reach for."""

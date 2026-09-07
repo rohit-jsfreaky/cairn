@@ -139,6 +139,29 @@ split out of Phase 5 because it needs no blockchain and no Discord answer.
 
 ## Session log
 
+- **2026-09-07 — the wrong-page bug, actually fixed this time.** Replaying `sign in as admin`
+  while already signed in kept offering to bind "type the admin email" to a dashboard nav
+  link. It had been "fixed" three times. It never ran once: `_off_trail` opened with
+  `if step.action == "goto" or not step.page: return None`, and reading the real trail out of
+  Sibyl showed `page=''` on all four steps. `Step.page` is written in exactly one place
+  (`distill.py:33`), only on a fresh walk, and nothing backfills it — so every trail saved
+  before that field existed opted out silently, forever. The tests all passed because every
+  one of them set `page=` by hand.
+  Measured damage: step 2's four locators each carried **4 misses** from 4 wrong-page
+  replays, health 0.75 and falling toward retirement, on a step that was never broken.
+  **The fix:** `pages_along()` derives where each step belongs from the trail itself — a
+  `goto` names its destination and every step after it inherits that until the next
+  navigation. No writes, no migration, no re-walk; the oldest trail is protected on its next
+  run. Verified against the real trail: steps 2–4 now resolve to `/admin/sign-in`.
+  Then it **recovers instead of reporting**: on a mismatch Cairn walks back to the page once
+  (only while nothing has been changed yet) and carries on. If the site bounces it a second
+  time that is proof the state already exists, so a trail with no READ in it returns
+  `already_done=True, ok=True` rather than an error. A trail that owes an answer still
+  reports `wrong_place`, because "it was already true" is not a number.
+  Also fixed: `cairn_show` returned "no trail remembered" for any site with several trails.
+  15 wrong-page tests, 80 executor tests, 135 MCP tests green. Ruff clean on the exact four
+  CI commands.
+
 - **2026-08-31** — idea pipeline run, name chosen (Cairn), scaffold + plan files created.
 - **2026-08-31 (later)** — `mcp/` split into its own folder. MCP SDK candidates verified:
   `mcp` 2.1.1, `fastmcp` 3.4.7.

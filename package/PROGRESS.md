@@ -650,6 +650,27 @@ is the biggest remaining gap between "demo" and "product".
 
 ## Session log
 
+- **2026-09-07 — wrong-page replay: why three fixes did nothing, and the one that works.**
+  `_off_trail` (executor.py) began `if step.action == "goto" or not step.page: return None`.
+  Every step of the real marketplace trail has `page=''`, so the whole protection returned on
+  its first line every run. `Step.page` is written only by `distill.py:33` on a fresh walk and
+  nothing backfills it, so the opt-out was permanent and invisible. `test_wrong_starting_page.py`
+  hid it completely — every fixture set `page=` by hand.
+  New `pages_along(steps, start_url)` derives the expectation from the trail instead: a `goto`
+  sets the current page (or `start_url` when the caller overrode step one), a step whose
+  postcondition is `url_contains` moves it on, everything else inherits. The value carried is
+  **what the navigation asked for**, never where it landed — the landing address would compare
+  a page with itself. `Step.page` still wins when present; derivation only fills the gap, so
+  `distill.py` and the model are untouched and new trails behave exactly as before.
+  `run()` now walks back to the expected page once per run, gated on no mutating step having
+  run yet, and only then decides. Bounced twice + no READ in the trail = `already_done=True`
+  with `ok=True`; with a READ it stays `wrong_place`. `_can_walk_back` refuses when there is no
+  origin to resolve against (a trail whose first step is a click has not been anywhere yet).
+  Tests rewritten around the demo site's `/admin -> /invoices` redirect, which is the real
+  already-signed-in shape; the old fixture used `/settings`, which the site serves, so recovery
+  would have "fixed" it and hidden the case. 15 pass. test_engine + test_answers +
+  test_run_finishes: 80 pass. mcp: 135 pass.
+
 - **2026-08-31** — folder created, plan written. No code.
 - **2026-09-03** — Phase 5a: agent-to-agent memory. Identity as a tenant, a commons,
   share/borrow/contribute, the tombstone, and the CLI a judge can drive. Found that

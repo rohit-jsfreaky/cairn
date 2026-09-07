@@ -28,7 +28,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import Error as PlaywrightError
 
@@ -135,6 +135,18 @@ class ReplayResult:
     the dashboard, where none of the controls is the one the step wants — and a repair
     offered there would bind a working step to whatever happened to be lying around."""
 
+    already_done: bool = False
+    """The trail's effect is already in place, so there was nothing left to do.
+
+    Reported with `ok=True`, because from the caller's side the task IS done — asking to
+    sign in when you are already signed in is not a failure, and answering it with an
+    error is the thing that makes an agent go looking for a bug that does not exist.
+
+    Only claimed with evidence. Cairn navigates to the page the trail starts on and is
+    redirected away a second time; a site that refuses to show its sign-in page is telling
+    us we are signed in. Never claimed for a trail with a READ step in it, because that
+    trail owes the caller an answer and we do not have one."""
+
     blocked: bool = False
     """A human check — a captcha — stood in the way. Deliberately NOT `needs_repair`:
     there is nothing to repair, and nothing an AI can do about it either. Reporting it as
@@ -208,6 +220,45 @@ def _redirected_there(landed: str, asked_for: str) -> bool:
     return bool(urlparse(landed).netloc) and urlparse(landed).netloc == urlparse(asked_for).netloc
 
 
+def pages_along(steps: list[Step], start_url: str | None = None) -> dict[int, str]:
+    """Where each step expects to be standing, worked out from the trail itself.
+
+    `Step.page` only exists on trails learned after it was added, and nothing backfills it,
+    so every trail saved before then opted out of the wrong-page check silently and forever.
+    That is not a gap worth papering over with a migration: the trail already knows the
+    answer and we were simply not reading it.
+
+    Step one is `goto /admin/sign-in`; steps two, three and four follow it with no
+    navigation in between, so they can only have run on `/admin/sign-in`. Walking the steps
+    in order and carrying that forward reconstructs the whole trail's geography from data
+    that is already in memory — no writes, no re-walk, and it works on the oldest trail
+    there is.
+
+    The value carried forward is what the navigation ASKED FOR, never where it landed.
+    Using the landing address would compare a page with itself and detect nothing, which is
+    exactly the failure this exists to catch: the site answering /admin/sign-in with
+    /admin/dashboard is the signal, not noise to be normalised away.
+
+    Steps before the first navigation have nothing to inherit and are simply absent.
+    """
+    expected: dict[int, str] = {}
+    asked: str | None = None
+    for step in steps:
+        if asked:
+            expected[step.index] = asked
+        if step.action == "goto":
+            # The caller can point step one somewhere else; then THAT is what was asked
+            # for, and every step after it belongs on the new page rather than the saved
+            # one. Without this the redirected-demo replay would report itself off-trail.
+            override = start_url if (start_url and step.index == 1) else None
+            asked = override or step.value or asked
+        elif step.postcondition.kind == "url_contains" and step.postcondition.value:
+            # A click that navigates. Most trails reach their page this way rather than
+            # by a goto, so leaving it out would cover only the minority shape.
+            asked = step.postcondition.value
+    return expected
+
+
 class Executor:
     """Replays a remembered trail. Reads memory, writes back what it learned."""
 
@@ -227,6 +278,10 @@ class Executor:
         self.profile = profile
 
     _domain: str = ""
+    _expected: dict[int, str] = {}
+    """Where each step of the trail being replayed expects to be. See `pages_along`."""
+    _went_back: bool = False
+    """Has this run already tried to get itself back onto the trail? Once only."""
 
     def run(
         self, domain: str, *, task: str | None = None, start_url: str | None = None
@@ -238,7 +293,9 @@ class Executor:
         """
         self._domain = domain
         self.answers: dict[str, Any] = {}
+        self._went_back = False
         playbook = self._load(domain, task)
+        self._expected = pages_along(playbook.steps, start_url)
         started = time.perf_counter()
         self.browser.saved_files.clear()
         self.browser.last_download = None
@@ -281,10 +338,60 @@ class Executor:
             # every listener — all of it about a page this trail has nothing to do with.
             if outcome.off_trail is not None:
                 belongs, here = outcome.off_trail
+
+                # Usually this only means the browser was left somewhere else. Walking back
+                # to the page the step belongs on fixes that without telling anyone, which
+                # is the whole difference between a tool that recovers and one that hands
+                # its user an error to read.
+                # A trail may hold its pages as bare paths, and Playwright needs a whole
+                # address. Resolving against where we are keeps a path on this site and
+                # leaves an absolute URL exactly as it was written. A trail whose first
+                # step is a click has not been anywhere yet, so there is no origin to
+                # resolve against and nothing to walk back to.
+                target = urljoin(self.browser.page.url, belongs)
+                if urlparse(target).scheme in ("http", "https") and self._can_walk_back(
+                    playbook, step
+                ):
+                    self._went_back = True
+                    self.browser.goto(target)
+                    retry = self._replay_step(step, start_url=None)
+                    if retry.matched_by is not None:
+                        metrics.steps_replayed += 1
+                        self.events.emit(
+                            StepPassed(
+                                index=step.index,
+                                intent=step.intent,
+                                matched_by=retry.matched_by,
+                                duration_ms=retry.duration_ms,
+                            )
+                        )
+                        continue
+                    if retry.off_trail is not None:
+                        belongs, here = retry.off_trail
+
                 self.events.emit(
                     StepFailed(index=step.index, intent=step.intent, reason=outcome.reason)
                 )
                 self._finish(playbook, metrics, started, succeeded=False)
+
+                # We asked for the page and were sent away from it a second time. A site
+                # that refuses to show its own sign-in page is telling us we are signed in,
+                # and answering "the trail is broken" to that sends an agent hunting a bug
+                # that does not exist. Only claimed for a trail that owes no answer — one
+                # with a READ in it has to come back with something, and we have nothing.
+                if self._went_back and not self._reads_anything(playbook):
+                    return ReplayResult(
+                        ok=True,
+                        metrics=metrics,
+                        already_done=True,
+                        reason=(
+                            f"Already done — nothing to do. {playbook.domain} sends "
+                            f"{belongs} to {here}, so the state this trail creates is "
+                            f"already in place. The trail is untouched and healthy."
+                        ),
+                        saved_files=list(self.browser.saved_files),
+                    )
+
                 return ReplayResult(
                     ok=False,
                     metrics=metrics,
@@ -581,6 +688,33 @@ class Executor:
 
         return None, found_anything, missed
 
+    def _can_walk_back(self, playbook: Playbook, step: Step) -> bool:
+        """May this run navigate back to where the step belongs, and try once more?
+
+        Once per run, and only while nothing has been changed yet. The loop is sequential,
+        so every step before this one has already run. Re-navigating after a form is half
+        filled would throw that work away to fix a problem the caller never had — a `goto`
+        and a `read` change nothing, so up to the first fill or click it is free, and after
+        it never is.
+        """
+        if self._went_back:
+            return False
+        return all(
+            earlier.action in ("goto", READ_ACTION)
+            for earlier in playbook.steps
+            if earlier.index < step.index
+        )
+
+    @staticmethod
+    def _reads_anything(playbook: Playbook) -> bool:
+        """Does this trail owe the caller an answer?
+
+        A trail that only changes state can honestly report "already done" when the site
+        says the state is already there. One with a READ in it cannot: it was asked for a
+        number, and "it was already true" is not a number.
+        """
+        return any(step.action == READ_ACTION for step in playbook.steps)
+
     def _off_trail(self, step: Step) -> tuple[str, str] | None:
         """Is this step being replayed somewhere it was never recorded?
 
@@ -591,14 +725,22 @@ class Executor:
         /admin/sign-in to /admin/dashboard, and the email field the step wants was never
         going to be there.
 
-        Trails saved before steps recorded their page have nothing to compare, and opt out.
+        A `goto` names its own destination, so it is never in the wrong place.
+
+        `Step.page` is the authority when the trail has it. When it does not — every trail
+        saved before that field existed, and nothing ever backfills it — the page is worked
+        out from the trail itself by `pages_along`. Reading only the stored field is what
+        made this check silently do nothing on real trails for three attempted fixes.
         """
-        if step.action == "goto" or not step.page:
+        if step.action == "goto":
+            return None
+        belongs = step.page or self._expected.get(step.index, "")
+        if not belongs:
             return None
         here = self.browser.page.url
-        if _same_page(here, step.page):
+        if _same_page(here, belongs):
             return None
-        return (step.page, here)
+        return (belongs, here)
 
     def _blame(self, missed: list[tuple[Locator, str]], step: Step) -> None:
         """Write down the misses from the pass that actually decided the step."""

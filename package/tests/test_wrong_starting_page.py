@@ -1,20 +1,15 @@
-"""A trail can be perfectly healthy and still not run, because you are somewhere else.
+"""Replaying a trail somewhere it does not start.
 
-Reported twice from a real marketplace. Replaying "sign in as admin" WHILE ALREADY SIGNED
-IN sends `/admin/sign-in` to `/admin/dashboard`, so there is no email field to fill. Cairn
-called it drift, offered twenty-three dashboard controls as repair candidates — nav links,
-stat tiles, a date picker — and told the caller to pick the one matching "enter the admin
-email". None of them was an email field. An agent following that instruction literally
-binds a working step to a nav link and destroys the trail.
+The dangerous lookalike. "This control moved" and "we are on a completely different page"
+look identical from inside a step, and reporting the second as the first invites a repair
+that binds a healthy step to whatever happened to be lying around. Replaying a sign-in while
+already signed in lands on a dashboard and offered twenty-three nav links as candidates for
+an email field.
 
-The first attempt only noticed when step 1 was a `goto` whose URL check failed, which
-misses almost every real trail: `url_contains` is a substring test, so a trail starting at
-a bare host matches every page on that site, and a trail that navigates by CLICKING never
-went through that branch at all.
-
-So a step now records the page it was performed on, and replay asks the question directly —
-before it tries a single locator. That order is the important part, and the second class
-below is why.
+The version of this that shipped could not fire at all on a real trail. It read `Step.page`,
+which only exists on trails learned after that field was added and which nothing backfills —
+so every trail saved before it opted out silently, forever, and the tests all passed because
+every one of them set `page=` by hand. The trail is now read for its own geography instead.
 """
 
 from __future__ import annotations
@@ -22,159 +17,251 @@ from __future__ import annotations
 import pytest
 
 from cairn.browser import Browser
-from cairn.executor import Executor
+from cairn.executor import Executor, pages_along
 from cairn.models import Locator, Playbook, Postcondition, Step
 from cairn.store import CairnStore
 
 SITE = "billing.example"
 TASK = "sign in"
 
+# The demo site answers /admin with a redirect to /invoices, exactly the way a sign-in page
+# bounces you once you are already signed in. /settings is served normally.
+BOUNCES = "/admin"
+SERVED = "/settings"
 
-def a_trail(*, belongs_on: str) -> Playbook:
-    """Open a page, then type into a field that only exists on `belongs_on`.
+
+def a_trail(*, belongs_on: str, reads: bool = False) -> Playbook:
+    """Open a page, then use a field that only exists on `belongs_on`.
 
     The shape every sign-in trail has: step one says WHERE, step two needs something that
     is only there.
     """
-    return Playbook(
-        domain=SITE,
-        task=TASK,
-        steps=[
+    steps = [
+        Step(
+            index=1,
+            intent="open the sign-in page",
+            action="goto",
+            value=BOUNCES,
+            postcondition=Postcondition("url_contains", BOUNCES),
+        ),
+        Step(
+            index=2,
+            intent="type the billing email",
+            action="fill",
+            value="finance@acme.com",
+            postcondition=Postcondition("element_present", "#billing-email"),
+            locators=[Locator("css", "#billing-email")],
+            page=belongs_on,
+        ),
+    ]
+    if reads:
+        steps.append(
             Step(
-                index=1,
-                intent="open the sign-in page",
-                action="goto",
-                value="/admin",
-                postcondition=Postcondition("url_contains", "/admin"),
-            ),
-            Step(
-                index=2,
-                intent="type the billing email",
-                action="fill",
-                value="finance@acme.com",
+                index=3,
+                intent="read the billing email",
+                action="read",
                 postcondition=Postcondition("element_present", "#billing-email"),
                 locators=[Locator("css", "#billing-email")],
                 page=belongs_on,
-            ),
-        ],
-    )
+            )
+        )
+    return Playbook(domain=SITE, task=TASK, steps=steps)
 
 
 @pytest.fixture
-def astray(store: CairnStore) -> CairnStore:
-    """A trail whose second step belongs on /settings, replayed somewhere else.
+def refused(store: CairnStore) -> CairnStore:
+    """A trail whose page the site will not serve — the already-signed-in shape.
 
-    The demo site's `/admin` redirects to `/invoices`, the way a sign-in page redirects
-    once you are already signed in.
+    Step two belongs on /admin, and /admin redirects to /invoices however often you ask.
     """
-    store.save_playbook(a_trail(belongs_on="/settings"))
+    store.save_playbook(a_trail(belongs_on=BOUNCES))
     return store
 
 
-class TestBeingOnTheWrongPage:
-    def test_it_is_not_reported_as_something_to_repair(
-        self, astray: CairnStore, browser: Browser, demo_server: str
-    ) -> None:
-        result = Executor(astray, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
+class TestWhenTheSiteKeepsRefusingTheTrailsStartingPage:
+    """Cairn walks back to the page and is sent away a second time. That is not a broken
+    trail — it is the site saying the state this trail creates is already there."""
 
-        assert result.ok is False
-        assert result.wrong_place is True
-        assert result.needs_repair is False
-
-    def test_and_no_candidates_are_offered_to_bind_it_to(
-        self, astray: CairnStore, browser: Browser, demo_server: str
+    def test_it_is_reported_as_done_not_as_a_failure(
+        self, refused: CairnStore, browser: Browser, demo_server: str
     ) -> None:
-        """Offering candidates IS the damage. Nothing on this page should ever be bound to
-        this step."""
-        result = Executor(astray, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
+        result = Executor(refused, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
+
+        assert result.ok is True
+        assert result.already_done is True
+
+    def test_and_nothing_is_offered_to_bind_the_step_to(
+        self, refused: CairnStore, browser: Browser, demo_server: str
+    ) -> None:
+        """Offering candidates IS the damage."""
+        result = Executor(refused, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
 
         assert result.repair is None
+        assert result.needs_repair is False
 
-    def test_it_says_where_the_step_belongs_and_where_we_are(
-        self, astray: CairnStore, browser: Browser, demo_server: str
+    def test_it_says_which_page_the_site_refused_and_where_it_sent_us(
+        self, refused: CairnStore, browser: Browser, demo_server: str
     ) -> None:
-        result = Executor(astray, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
+        result = Executor(refused, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
 
-        assert "/settings" in result.reason
+        assert BOUNCES in result.reason
         assert "/invoices" in result.reason
-        assert "not met" in result.reason
-
-    def test_and_says_plainly_not_to_repair_it(
-        self, astray: CairnStore, browser: Browser, demo_server: str
-    ) -> None:
-        result = Executor(astray, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
-
-        assert "NOT repair" in result.reason
-
-    def test_the_already_done_case_is_named_because_it_is_the_common_one(
-        self, astray: CairnStore, browser: Browser, demo_server: str
-    ) -> None:
-        result = Executor(astray, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
-
         assert "already" in result.reason.lower()
 
 
-class TestItDoesNotDamageTheTrailItRefusedToRun:
+class TestItDoesNotDamageTheTrailItDidNotRun:
     """The fault that was worse than the one reported.
 
     Deciding late — after the locators had been tried — meant every wrong-place replay
-    recorded a miss against a perfectly good locator. A few of those drag the trail's
-    health under half, `is_stale` turns true, and the trail is RETIRED. Stopping the bad
-    repair does nothing about that; only asking the question first does.
+    recorded a miss against a perfectly good locator. A few of those drag the trail's health
+    under half, `is_stale` turns true, and the trail is RETIRED. Measured on the real
+    marketplace trail: four replays while signed in put four misses on every locator of a
+    step that was never broken.
     """
 
     def test_the_healthy_locator_is_not_marked_as_drift(
-        self, astray: CairnStore, browser: Browser, demo_server: str
+        self, refused: CairnStore, browser: Browser, demo_server: str
     ) -> None:
-        before = astray.load_playbook(SITE, TASK).steps[1].locators[0].misses
+        before = refused.load_playbook(SITE, TASK).steps[1].locators[0].misses
 
-        Executor(astray, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
+        Executor(refused, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
 
-        after = astray.load_playbook(SITE, TASK).steps[1].locators[0].misses
+        after = refused.load_playbook(SITE, TASK).steps[1].locators[0].misses
         assert after == before
 
     def test_and_the_trail_is_never_condemned_however_often_you_do_it(
-        self, astray: CairnStore, browser: Browser, demo_server: str
+        self, refused: CairnStore, browser: Browser, demo_server: str
     ) -> None:
-        """A handful of wrong-place replays used to be enough to retire a trail.
-
-        Health may RISE — step one really does succeed every time, and earns its hit. What
-        must never happen is a fall, or `is_stale` turning true on a trail that was never
-        broken.
-        """
-        was = astray.load_playbook(SITE, TASK).health
-
         for _ in range(5):
-            Executor(astray, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
+            Executor(refused, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
 
-        after = astray.load_playbook(SITE, TASK)
-        assert after.health >= was
-        assert after.is_stale is False
+        assert refused.load_playbook(SITE, TASK).is_stale is False
 
 
-class TestARedirectIsStillFine:
+class TestWhenTheBrowserWasSimplyLeftSomewhereElse:
+    """The common case, and the one that must never reach the user at all.
+
+    Being on the wrong page usually means the last run stopped somewhere. Cairn walks back
+    to the page the step belongs on and carries on, silently.
+    """
+
+    def test_it_walks_back_and_finishes_the_trail(
+        self, store: CairnStore, browser: Browser, demo_server: str
+    ) -> None:
+        store.save_playbook(a_trail(belongs_on=SERVED))
+
+        result = Executor(store, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
+
+        assert result.ok is True
+        assert result.already_done is False
+        assert result.repair is None
+
     def test_a_step_replayed_where_it_belongs_still_runs(
         self, store: CairnStore, browser: Browser, demo_server: str
     ) -> None:
-        """The tolerance that caused this must not be thrown out with it: a site that
-        canonicalises its own URL has to keep working."""
-        store.save_playbook(a_trail(belongs_on="/settings"))
+        """The check must not fire when everything is fine. A site that canonicalises its
+        own URL has to keep working."""
+        store.save_playbook(a_trail(belongs_on=SERVED))
 
         result = Executor(store, browser).run(SITE, task=TASK, start_url=f"{demo_server}/settings")
 
         assert result.ok is True
         assert result.wrong_place is False
+        assert result.already_done is False
 
-    def test_a_trail_from_before_this_existed_still_replays(
+
+class TestATrailThatOwesAnAnswer:
+    def test_it_is_never_called_already_done(
         self, store: CairnStore, browser: Browser, demo_server: str
     ) -> None:
-        """Steps saved before they recorded a page have nothing to compare, and must opt
-        out rather than refuse everything."""
+        """ "It was already true" is not a number. A trail with a READ in it was asked to
+        come back with something, so reporting success without it would be a lie."""
+        store.save_playbook(a_trail(belongs_on=BOUNCES, reads=True))
+
+        result = Executor(store, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
+
+        assert result.already_done is False
+        assert result.ok is False
+        assert result.wrong_place is True
+        assert result.repair is None
+
+
+class TestTrailsThatNeverRecordedTheirPage:
+    """The bug. Every trail saved before `Step.page` existed carries an empty one, nothing
+    backfills it, and the check used to return on its first line because of that."""
+
+    def test_a_trail_with_no_stored_page_is_still_protected(
+        self, store: CairnStore, browser: Browser, demo_server: str
+    ) -> None:
         store.save_playbook(a_trail(belongs_on=""))
 
-        result = Executor(store, browser).run(SITE, task=TASK, start_url=f"{demo_server}/settings")
+        result = Executor(store, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
 
-        assert result.ok is True
+        assert result.repair is None
+        assert result.already_done is True
+
+    def test_and_its_locators_are_not_blamed_either(
+        self, store: CairnStore, browser: Browser, demo_server: str
+    ) -> None:
+        store.save_playbook(a_trail(belongs_on=""))
+        before = store.load_playbook(SITE, TASK).steps[1].locators[0].misses
+
+        Executor(store, browser).run(SITE, task=TASK, start_url=f"{demo_server}/admin")
+
+        assert store.load_playbook(SITE, TASK).steps[1].locators[0].misses == before
+
+
+class TestWorkingOutWherAStepBelongs:
+    def test_every_step_after_a_goto_belongs_on_what_the_goto_asked_for(self) -> None:
+        steps = a_trail(belongs_on="").steps
+
+        assert pages_along(steps) == {2: BOUNCES}
+
+    def test_the_caller_redirecting_step_one_moves_the_whole_trail_with_it(self) -> None:
+        """`start_url` is what step one really asked for, so everything after it belongs on
+        the new page. Comparing against the saved address instead would report a redirected
+        demo replay as off-trail on its very first step."""
+        steps = a_trail(belongs_on="").steps
+
+        assert pages_along(steps, "https://example.test/settings") == {
+            2: "https://example.test/settings"
+        }
+
+    def test_a_click_that_navigates_moves_the_trail_on(self) -> None:
+        """Most trails reach their page by clicking, not by a goto."""
+        steps = [
+            Step(
+                index=1,
+                intent="open the account menu",
+                action="click",
+                postcondition=Postcondition("url_contains", "/settings"),
+                locators=[Locator("css", "#account-menu")],
+            ),
+            Step(
+                index=2,
+                intent="type the billing email",
+                action="fill",
+                postcondition=Postcondition("element_present", "#billing-email"),
+                locators=[Locator("css", "#billing-email")],
+            ),
+        ]
+
+        assert pages_along(steps) == {2: "/settings"}
+
+    def test_steps_before_any_navigation_have_nothing_to_compare(self) -> None:
+        """Opting out is right here — we genuinely do not know, and guessing would refuse
+        trails that are perfectly fine."""
+        steps = [
+            Step(
+                index=1,
+                intent="open the account menu",
+                action="click",
+                postcondition=Postcondition("element_present", "#account-menu"),
+                locators=[Locator("css", "#account-menu")],
+            )
+        ]
+
+        assert pages_along(steps) == {}
 
 
 class TestATrailThatNavigatesByClicking:
@@ -208,6 +295,5 @@ class TestATrailThatNavigatesByClicking:
 
         result = Executor(store, browser).run(SITE, task=TASK, start_url=f"{demo_server}/invoices")
 
-        assert result.wrong_place is True
         assert result.needs_repair is False
         assert result.repair is None

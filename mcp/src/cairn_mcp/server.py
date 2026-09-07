@@ -693,6 +693,25 @@ def build_server(
         except Exception as failure:  # noqa: BLE001 - reported, not raised at the client
             return err(failure)
 
+        if result.already_done:
+            # Reported as a success, because it is one. Cairn walked to the page the trail
+            # starts on and the site sent it away again, which is the site saying the state
+            # this trail creates is already there. Handing an AI an error here is what makes
+            # it go hunting for a broken step and "repair" a healthy one.
+            return {
+                "ok": True,
+                "known": True,
+                "already_done": True,
+                "site": key,
+                "profile": tools.active,
+                "message": result.reason,
+                "next": (
+                    "Nothing to do and nothing to repair — the task was already in the "
+                    "state this trail creates. Carry on with what the user actually asked "
+                    "for. Do NOT call cairn_repair and do NOT explore the site."
+                ),
+            }
+
         if result.wrong_place:
             return {
                 "ok": False,
@@ -1117,6 +1136,20 @@ def build_server(
         playbook = tools.store.load_playbook(key)
         facts = _facts_for(tools, key)
         if playbook is None:
+            # A site with SEVERAL trails and no task named falls through every branch of
+            # load_playbook, and saying "nothing remembered" about a site with three trails
+            # is worse than unhelpful — it is the tool you reach for to debug exactly this,
+            # answering that there is nothing to debug.
+            tasks = tools.store.trails_for(key)
+            if tasks:
+                return {
+                    "ok": True,
+                    "known": True,
+                    "site": key,
+                    "tasks": tasks,
+                    "site_facts": facts,
+                    "message": (f"{key} has {len(tasks)} trails. Name one to see its steps."),
+                }
             return {
                 "ok": False,
                 "known": False,
