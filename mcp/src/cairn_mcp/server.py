@@ -712,6 +712,26 @@ def build_server(
                 ),
             }
 
+        if result.needs_repair and result.aimed_at:
+            was, now = result.aimed_at
+            return {
+                "ok": False,
+                "known": True,
+                "aimed_at": {"was": was, "now": now},
+                "site": key,
+                "profile": tools.active,
+                "message": result.reason,
+                "next": (
+                    f"Do NOT call cairn_repair. This trail is for {was!r} and you asked "
+                    f"about {now!r}. Cairn followed the same route aimed at {now!r} and "
+                    f"stopped because it could not see {now!r} on the page — so there is "
+                    f"nothing broken to fix, and binding this step to whatever is here "
+                    f"would wreck a working trail. Either {now!r} does not exist on this "
+                    f"site, or it is reached a different way: explore it and cairn_save it "
+                    f"as its own task."
+                ),
+            }
+
         if result.wrong_place:
             return {
                 "ok": False,
@@ -814,6 +834,13 @@ def build_server(
             "task": ran,
             "matched_task": ran,
             "asked_for": task,
+            # The route was the trail's; the subject was this caller's. Never left implicit
+            # — asking about one project and being handed another project's number is the
+            # exact failure this exists to prevent.
+            "aimed_at": (
+                {"was": result.aimed_at[0], "now": result.aimed_at[1]} if result.aimed_at else None
+            ),
+            "unverified_steps": result.unverified_steps,
             "steps_replayed": result.metrics.steps_replayed,
             "duration_ms": result.metrics.duration_ms,
             "model_calls": 0,
@@ -825,7 +852,21 @@ def build_server(
                 (
                     f"You asked for {task!r} and Cairn ran its trail {ran!r} — the same job "
                     f"under different words. "
-                    if rephrased
+                    if rephrased and not result.aimed_at
+                    else ""
+                )
+                + (
+                    f"This is the trail {ran!r}, aimed at {result.aimed_at[1]!r} instead of "
+                    f"{result.aimed_at[0]!r}. Cairn checked that {result.aimed_at[1]!r} was "
+                    f"really on the page before acting on it. Check the answer names the "
+                    f"thing you asked about. "
+                    if result.aimed_at
+                    else ""
+                )
+                + (
+                    f"Steps {result.unverified_steps} took the new subject but nothing on "
+                    f"the page could confirm it — their own checks never mentioned it. "
+                    if result.unverified_steps
                     else ""
                 )
                 + (

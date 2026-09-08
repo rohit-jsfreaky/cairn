@@ -25,6 +25,8 @@ what makes it forgettable.
 
 from __future__ import annotations
 
+import copy
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -60,7 +62,7 @@ from .models import (
 from .operations import READ_ACTION, check_postcondition, controls_in
 from .secrets import MissingSecret
 from .secrets import resolve as resolve_secret
-from .store import CairnStore
+from .store import CairnStore, swapped_subject
 
 # A step is considered past saving when this share of the trail is already broken.
 STALE_SHARE = 0.5
@@ -74,6 +76,12 @@ SETTLE_AFTER_LAST_STEP_MS = 4000
 # Actions that put text into a field, so the value may be a secret held on this machine
 # rather than in the trail.
 _TEXT_ENTRY = {"fill", "type"}
+
+# Actions that cannot, on their own, take the browser to a different page. Only these let
+# `pages_along` carry an expectation forward. Deliberately a short allowlist rather than a
+# list of the ones that DO navigate: a new action added to the registry then defaults to
+# "this might have moved us", which costs a check and never costs a false accusation.
+_STAYS_PUT = frozenset({READ_ACTION, "fill", "type", "hover", "select_option", "check"})
 
 
 @dataclass
@@ -146,6 +154,24 @@ class ReplayResult:
     redirected away a second time; a site that refuses to show its sign-in page is telling
     us we are signed in. Never claimed for a trail with a READ step in it, because that
     trail owes the caller an answer and we do not have one."""
+
+    aimed_at: tuple[str, str] | None = None
+    """The subject this run was pointed at instead of the one the trail was saved for.
+
+    `("ankush", "riya")` means the stored route ran with every mention of ankush replaced.
+    Always reported, never assumed: the caller asked about a different thing and has to be
+    able to see that Cairn worked that out rather than being told about it.
+
+    A run with this set never writes the trail back. The route is the trail's; the values
+    are this caller's, and folding one run's outcome into the other's health would let a
+    question about pannly quietly rot the trail that belongs to vouchley."""
+
+    unverified_steps: list[int] = field(default_factory=list)
+    """Substituted steps where nothing on the page could confirm the new subject landed.
+
+    The step did what it was told and its own check passed — but that check never mentioned
+    the subject, so passing it proves the page moved, not that it moved to the right place.
+    Named so the caller can look, rather than left for it to assume."""
 
     blocked: bool = False
     """A human check — a captcha — stood in the way. Deliberately NOT `needs_repair`:
@@ -220,6 +246,60 @@ def _redirected_there(landed: str, asked_for: str) -> bool:
     return bool(urlparse(landed).netloc) and urlparse(landed).netloc == urlparse(asked_for).netloc
 
 
+def _reaim(text: str | None, was: str, now: str) -> tuple[str | None, bool]:
+    """Swap one whole word for another, leaving anything it merely sits inside alone.
+
+    Whole words only, or "ana" quietly rewrites "anastasia". Alphanumerics are the word,
+    so `vouchley` still matches inside `https://vouchley.example.com/` — a dot is a
+    boundary, and that URL is exactly the place the subject usually hides.
+    """
+    if not text:
+        return text, False
+    pattern = re.compile(rf"(?<![0-9A-Za-z]){re.escape(was)}(?![0-9A-Za-z])", re.IGNORECASE)
+    swapped, count = pattern.subn(now, text)
+    return swapped, count > 0
+
+
+def with_subject(
+    playbook: Playbook, was: str, now: str
+) -> tuple[Playbook, dict[int, set[str]]] | None:
+    """The same trail, aimed at a different subject. A COPY — memory is never touched.
+
+    "message ankush" and "message riya" are one route. So are the same numbers for two
+    different projects. Storing a separate trail per person or per project is not memory,
+    it is a filing cabinet, and it means the second one costs full price forever.
+
+    `None` when the old subject appears nowhere in the trail's own data. That matters:
+    "tell me the quote" against "read the quote" also differs by one word, but `read`
+    is not written into any step, so it is a rephrasing rather than a new target and the
+    ordinary matcher should handle it untouched.
+
+    Returns the aimed copy and, per step, WHERE the swap landed — which is what decides
+    how that step gets verified.
+    """
+    aimed = copy.deepcopy(playbook)
+    touched: dict[int, set[str]] = {}
+    for step in aimed.steps:
+        where: set[str] = set()
+        step.intent, _ = _reaim(step.intent, was, now)
+        step.value, hit = _reaim(step.value, was, now)
+        if hit:
+            where.add("value")
+        step.postcondition.value, hit = _reaim(step.postcondition.value, was, now)
+        if hit:
+            where.add("check")
+        step.page, hit = _reaim(step.page, was, now)
+        if hit:
+            where.add("page")
+        for locator in step.locators:
+            locator.value, hit = _reaim(locator.value, was, now)
+            if hit:
+                where.add("locator")
+        if where:
+            touched[step.index] = where
+    return (aimed, touched) if touched else None
+
+
 def pages_along(steps: list[Step], start_url: str | None = None) -> dict[int, str]:
     """Where each step expects to be standing, worked out from the trail itself.
 
@@ -256,6 +336,13 @@ def pages_along(steps: list[Step], start_url: str | None = None) -> dict[int, st
             # A click that navigates. Most trails reach their page this way rather than
             # by a goto, so leaving it out would cover only the minority shape.
             asked = step.postcondition.value
+        elif step.action not in _STAYS_PUT:
+            # Anything that can move the page and did not SAY where it was going leaves us
+            # genuinely not knowing. Carrying the old page forward past it is worse than
+            # knowing nothing: a sign-in ends by pressing a button, the app redirects to a
+            # dashboard, and every later step then looks off-trail on a run that is going
+            # perfectly. Forgetting here is the honest answer.
+            asked = None
     return expected
 
 
@@ -282,6 +369,12 @@ class Executor:
     """Where each step of the trail being replayed expects to be. See `pages_along`."""
     _went_back: bool = False
     """Has this run already tried to get itself back onto the trail? Once only."""
+    _aim: tuple[str, str] | None = None
+    """The subject swap in force for this run, if any. See `with_subject`."""
+    _aimed: dict[int, set[str]] = {}
+    """Per step, where the swap landed: value, check, page or locator."""
+    _unverified: list[int] = []
+    """Substituted steps nothing on the page could confirm."""
 
     def run(
         self, domain: str, *, task: str | None = None, start_url: str | None = None
@@ -294,7 +387,22 @@ class Executor:
         self._domain = domain
         self.answers: dict[str, Any] = {}
         self._went_back = False
+        self._unverified = []
         playbook = self._load(domain, task)
+
+        # Same route, different subject. "message riya" against a trail saved as "message
+        # ankush" is not a rephrasing and must not be replayed unchanged — that is how a
+        # message reaches the wrong person, and how a question about one project comes back
+        # with another project's numbers.
+        self._aim = None
+        self._aimed = {}
+        swap = swapped_subject(task, playbook.task, domain) if task else None
+        if swap:
+            reaimed = with_subject(playbook, *swap)
+            if reaimed:
+                playbook, self._aimed = reaimed
+                self._aim = swap
+
         self._expected = pages_along(playbook.steps, start_url)
         started = time.perf_counter()
         self.browser.saved_files.clear()
@@ -323,6 +431,7 @@ class Executor:
 
             if outcome.matched_by is not None:
                 metrics.steps_replayed += 1
+                self._note_if_unproven(step)
                 self.events.emit(
                     StepPassed(
                         index=step.index,
@@ -410,6 +519,29 @@ class Executor:
             self.events.emit(
                 StepFailed(index=step.index, intent=step.intent, reason=outcome.reason)
             )
+
+            # An aimed run that stops has found nothing wrong with the trail. It followed a
+            # route built for one subject, pointed at another, and could not see the new one
+            # — so the page in front of it has no business being bound to this step. Decided
+            # here rather than only in the reply, so the CLI cannot offer the repair either.
+            if self._aim is not None:
+                was, now = self._aim
+                self._finish(playbook, metrics, started, succeeded=False)
+                return ReplayResult(
+                    ok=False,
+                    metrics=metrics,
+                    aimed_at=self._aim,
+                    reason=(
+                        f"This trail is for {was!r} and you asked about {now!r}. Cairn "
+                        f"followed the same route aimed at {now!r} and stopped at step "
+                        f"{step.index} ({step.intent!r}) because it could not see {now!r} "
+                        f"there. Nothing is broken — do NOT repair it. Either {now!r} is "
+                        f"not on this site, or it is reached another way, and that is a "
+                        f"task of its own to walk and save."
+                    ),
+                    saved_files=list(self.browser.saved_files),
+                )
+
             request = self._repair_request(playbook, step, outcome.tried)
             self.events.emit(
                 RepairNeeded(
@@ -472,6 +604,11 @@ class Executor:
                 repair=request,
                 reason=outcome.reason,
                 saved_files=list(self.browser.saved_files),
+                # A run that stopped BECAUSE it was aimed somewhere new has to say so.
+                # Without this the caller sees "this step went stale" and repairs a trail
+                # that is perfectly healthy — it was simply pointed at a subject that is
+                # not on this page.
+                aimed_at=self._aim,
             )
 
         self._let_the_last_step_land(playbook)
@@ -481,6 +618,8 @@ class Executor:
             metrics=metrics,
             saved_files=list(self.browser.saved_files),
             answers=dict(self.answers),
+            aimed_at=self._aim,
+            unverified_steps=list(self._unverified),
         )
 
     def _let_the_last_step_land(self, playbook: Playbook) -> None:
@@ -565,6 +704,22 @@ class Executor:
             )
 
             elapsed = int((time.perf_counter() - began) * 1000)
+
+            # A goto's own check is usually about the section, not the subject —
+            # `/search-console` is true of every project on it. So when the subject was
+            # swapped into this address, the address that came back has to show the NEW
+            # one. Sites answer an unknown id by quietly returning you to the default,
+            # which passes the stored check and then reads the wrong project's numbers.
+            if passed and self._aim and "value" in self._aimed.get(step.index, set()):
+                _, landed = _reaim(self.browser.page.url, self._aim[1], self._aim[1])
+                if not landed:
+                    return self._StepOutcome(
+                        reason=(
+                            f"asked for {self._aim[1]!r} and the address came back as "
+                            f"{self.browser.page.url} — the site did not go there"
+                        )
+                    )
+
             if passed:
                 step.record_hit()
                 return self._StepOutcome(matched_by="url", duration_ms=elapsed)
@@ -619,6 +774,41 @@ class Executor:
         outcome.reason = "every remembered way of finding this went stale"
         return outcome
 
+    def _note_if_unproven(self, step: Step) -> None:
+        """A step took the new subject, passed, and nothing on the page vouched for it.
+
+        The step's own check said the page moved. It did not say the page moved to the
+        right subject, because that check never mentioned one. Worth naming rather than
+        leaving the caller to assume the swap was confirmed everywhere it was applied.
+        """
+        where = self._aimed.get(step.index)
+        if not self._aim or not where:
+            return
+        proven = "locator" in where or "check" in where or step.action == "goto"
+        if not proven:
+            self._unverified.append(step.index)
+
+    @staticmethod
+    def _shows(target: Any, subject: str) -> bool:
+        """Does this one element say the subject — in its text, its value, or its address?
+
+        Deliberately narrow. It asks about the element the step resolved to and nothing
+        else on the page, because "is it somewhere on screen" is the question that lets a
+        name in a sidebar vouch for the wrong conversation being open.
+        """
+        for read in ("inner_text", "input_value"):
+            try:
+                said = getattr(target, read)(timeout=1500)
+            except (PlaywrightError, AttributeError):
+                continue
+            if said and _reaim(said, subject, subject)[1]:
+                return True
+        try:
+            href = target.get_attribute("href", timeout=1500) or ""
+        except (PlaywrightError, AttributeError):
+            href = ""
+        return bool(href) and _reaim(href, subject, subject)[1]
+
     def _try_locators(
         self, step: Step, outcome: _StepOutcome, *, began: float
     ) -> tuple[_StepOutcome | None, bool, list[tuple[Locator, str]]]:
@@ -647,6 +837,21 @@ class Executor:
                 continue
 
             found_anything = True
+
+            # The promise: Cairn will aim a route at a new subject, but it will not ACT
+            # until it can see that subject on the thing it is about to act on. Checking
+            # the whole page is not enough — riya sitting in the conversation list while
+            # ankush's thread is open would pass, and the message would go to ankush.
+            aimed_here = self._aim and "locator" in self._aimed.get(step.index, set())
+            if aimed_here and not self._shows(target, self._aim[1]):
+                outcome.reason = (
+                    f"this step was aimed at {self._aim[1]!r}, and what it found on the "
+                    f"page does not say {self._aim[1]!r}. Stopping before it acts, because "
+                    f"the route would otherwise carry on against the wrong one."
+                )
+                outcome.duration_ms = int((time.perf_counter() - began) * 1000)
+                return outcome, found_anything, missed
+
             try:
                 spoke = self._do(step, target, domain=self._domain)
             except MissingSecret:
@@ -1036,12 +1241,26 @@ class Executor:
 
         # Locator hit/miss counts were updated in place while replaying, so saving here
         # is what makes the trail get better every time it is walked.
+        #
+        # An aimed run is the exception, and it must never be written back. The playbook in
+        # hand is a COPY with somebody else's subject in it: saving would overwrite the
+        # trail that belongs to vouchley with pannly's addresses, and fold a run against a
+        # different target into the health of a trail that was never asked to do it.
         playbook.runs += 1
-        self.store.save_playbook(playbook)
+        if self._aim is None:
+            self.store.save_playbook(playbook)
         self.store.journal_run(metrics)
 
         self.events.emit(
-            MemoryWrite(category="playbook", name=playbook.domain, detail="scores updated")
+            MemoryWrite(
+                category="playbook",
+                name=playbook.domain,
+                detail=(
+                    "scores updated"
+                    if self._aim is None
+                    else f"not written — this run was aimed at {self._aim[1]!r}"
+                ),
+            )
         )
         self.events.emit(
             RunFinished(

@@ -971,6 +971,35 @@ def shares_meaning(wanted: str, candidate: str, domain: str | None = None) -> bo
     return bool(_meaningful(wanted, domain) & _meaningful(candidate, domain))
 
 
+def swapped_subject(
+    wanted: str, candidate: str, domain: str | None = None
+) -> tuple[str, str] | None:
+    """The one thing that changed between two ways of naming the same job.
+
+    "message ankush" and "message riya" are the same route with a different subject, and so
+    are "clicks for vouchley" and "clicks for pannly". Every word matches but one, and that
+    one word is the entire point of the request.
+
+    Without this the matcher scores those two as nearly identical and runs the stored trail
+    unchanged — reporting vouchley's number for a question about pannly, or worse, sending
+    a message to the wrong person. Recognising the swap is what turns the most dangerous
+    kind of near-miss into the feature it was trying to be.
+
+    Returns (was, now) or None. Exactly one word may differ each way: two changes is a
+    different request, not the same one aimed somewhere else.
+    """
+    asked = _meaningful(wanted, domain)
+    known = _meaningful(candidate, domain)
+    added, dropped = asked - known, known - asked
+    if len(added) != 1 or len(dropped) != 1:
+        return None
+    if not asked & known:
+        # Nothing shared at all, so there is no route in common to reuse — a one-word
+        # request against a one-word trail is not a swap, it is a different job.
+        return None
+    return (dropped.pop(), added.pop())
+
+
 def _overlap(wanted: str, candidate: str, domain: str | None = None) -> float:
     """How alike two descriptions of a job are, 0 to 1.
 

@@ -165,6 +165,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     for saved in result.saved_files:
         print(f"  {TICK} saved  {saved}")
 
+    if result.aimed_at:
+        was, now = result.aimed_at
+        print()
+        print(f"  {TICK} this is the trail for {was}, aimed at {now}")
+        print(f"    memory was not changed — {was}'s trail is untouched")
+        if result.unverified_steps:
+            print(f"    steps {result.unverified_steps} could not confirm {now} on the page")
+
     if result.already_done:
         # Not a failure and must not read as one. Asking to sign in when you are already
         # signed in is a task that is finished, and exiting non-zero on it sends whatever

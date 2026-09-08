@@ -650,6 +650,55 @@ is the biggest remaining gap between "demo" and "product".
 
 ## Session log
 
+- **2026-09-09 (CI caught what local runs did not) —** three tests failed on GitHub that
+  passed here: two in `test_engine.py`, one in `test_run_finishes.py`, all "the run failed
+  when it should have succeeded". Cause was `pages_along` carrying a page expectation forward
+  past a step that navigates. A sign-in ends by pressing a button and the app redirects, so
+  every step after the click still expected the sign-in page, looked off-trail, and triggered
+  the walk-back on a run that was going perfectly.
+  Fixed with `_STAYS_PUT` — an allowlist of actions that cannot move the page (read, fill,
+  type, hover, select_option, check). Anything else clears the expectation. An allowlist on
+  purpose: a new action added to the registry then defaults to "this might have moved us",
+  which costs a check and never costs a false accusation. Pinned by
+  `test_an_expectation_does_not_survive_a_step_that_could_navigate`.
+
+- **2026-09-09 — same route, new subject.** Rohit's call, and the biggest behaviour change
+  since replay itself. "message ankush" today and "message riya" tomorrow is ONE route with
+  one thing swapped; a trail per person is a filing cabinet, not memory.
+  It started as a bug. `read total web search clicks for pannly` matched the trail saved for
+  vouchley — every word the same but the one that mattered — and would have replayed it
+  unchanged, reporting vouchley's number as pannly's. The fix and the feature turned out to
+  be the same insight: a word that sits in BOTH the task and a step's stored value is not a
+  constant, it is the subject.
+  `swapped_subject` (store.py) finds the one word that changed. `with_subject` (executor.py)
+  makes a COPY with it replaced in step values, goto URLs, locators, postconditions and
+  intents — and returns None when the old word is written nowhere, which is what keeps a
+  plain rephrasing ("tell" for "read") on the ordinary path. Two gates, and the second is the
+  one that protects the matching we already measured.
+  **The safety is the promise: Cairn will aim a route at a new subject, but will not ACT
+  until it can see that subject on the thing it is about to act on.** Checking the whole page
+  is not enough — riya in the conversation list while ankush's thread is open would pass, and
+  the message would go to ankush. So the check is on the resolved element only, whole words,
+  and for a `goto` it is the address that came back. Substituting the postconditions means
+  most of that verification comes free from checks the trail already had.
+  An aimed run **never writes memory back** and never offers a repair. The route belongs to
+  the trail; the subject belongs to this one caller.
+  Found by running it for real, not by tests: the answer came back keyed "…for
+  microsoft/playwright" while holding vscode's number (intents now substituted), and the CLI
+  announced a memory write that deliberately had not happened.
+  Verified live: `count open issues on microsoft/vscode` against the playwright trail went to
+  vscode and read 18,136 — playwright's is 151 — and left the playwright trail at runs=1 with
+  every value unchanged. 21 new tests in `test_same_route_new_subject.py`.
+
+- **2026-09-09 — `cairn show` and release 0.3.2.** Found while rehearsing the demo: `cairn show`
+  on a site with several trails printed "nothing remembered", because `load_playbook` has no
+  branch for "several trails, no task named" and falls through every case. The one command whose
+  job is to show you memory was telling a judge memory was empty. It now lists the trails and
+  takes `--task`. The MCP tool was fixed on 09-07; the CLI was missed, and the CLI is what a
+  judge runs. Four new tests in `test_cli_show.py` — there were none before.
+  Published `cairn-browser` 0.3.2. `cairn-browser-mcp` stays 0.3.1: its code did not change and
+  its floor `>=0.3.1` resolves to the new engine.
+
 - **2026-09-07 — wrong-page replay: why three fixes did nothing, and the one that works.**
   `_off_trail` (executor.py) began `if step.action == "goto" or not step.page: return None`.
   Every step of the real marketplace trail has `page=''`, so the whole protection returned on

@@ -211,7 +211,7 @@ class TestTrailsThatNeverRecordedTheirPage:
         assert store.load_playbook(SITE, TASK).steps[1].locators[0].misses == before
 
 
-class TestWorkingOutWherAStepBelongs:
+class TestWorkingOutWhereAStepBelongs:
     def test_every_step_after_a_goto_belongs_on_what_the_goto_asked_for(self) -> None:
         steps = a_trail(belongs_on="").steps
 
@@ -247,6 +247,48 @@ class TestWorkingOutWherAStepBelongs:
         ]
 
         assert pages_along(steps) == {2: "/settings"}
+
+    def test_an_expectation_does_not_survive_a_step_that_could_navigate(self) -> None:
+        """A sign-in ends by pressing a button and the app redirects. Carrying the sign-in
+        page forward past that click made every later step look off-trail on a run that was
+        going perfectly — it broke three tests before CI caught it. Not knowing is the
+        honest answer, and it costs a check rather than a false accusation."""
+        steps = [
+            Step(
+                index=1,
+                intent="open the sign-in page",
+                action="goto",
+                value=BOUNCES,
+                postcondition=Postcondition("url_contains", BOUNCES),
+            ),
+            Step(
+                index=2,
+                intent="type the email",
+                action="fill",
+                postcondition=Postcondition("element_present", "#billing-email"),
+                locators=[Locator("css", "#billing-email")],
+            ),
+            Step(
+                index=3,
+                intent="submit",
+                action="click",
+                postcondition=Postcondition("text_present", "Signing in..."),
+                locators=[Locator("css", "button")],
+            ),
+            Step(
+                index=4,
+                intent="read the greeting",
+                action="read",
+                postcondition=Postcondition("element_present", "h1"),
+                locators=[Locator("css", "h1")],
+            ),
+        ]
+
+        pages = pages_along(steps)
+
+        assert pages[2] == BOUNCES, "a fill cannot have moved us"
+        assert pages[3] == BOUNCES, "the click itself still happens on the sign-in page"
+        assert 4 not in pages, "after the click, where we are is genuinely unknown"
 
     def test_steps_before_any_navigation_have_nothing_to_compare(self) -> None:
         """Opting out is right here — we genuinely do not know, and guessing would refuse
