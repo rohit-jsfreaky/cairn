@@ -325,8 +325,19 @@ def _print_one_page(site_map: SiteMap, domain: str, path: str) -> int:
 
 def cmd_show(args: argparse.Namespace) -> int:
     store = _store(args)
-    playbook = store.load_playbook(_site_key(args.domain))
+    key = _site_key(args.domain)
+    playbook = store.load_playbook(key, getattr(args, "task", None))
     if playbook is None:
+        # A site with several trails and no task named matches none of them. Saying
+        # "nothing remembered" about a site holding three trails is the command you reach
+        # for to inspect memory, telling you memory is empty.
+        tasks = store.trails_for(key)
+        if tasks:
+            print(f"\n  {key} — {len(tasks)} trails. Name one to see its steps.\n")
+            for task in tasks:
+                print(f"    cairn show {key} --task {task!r}")
+            print()
+            return 0
         print(f"\n  nothing remembered for {args.domain}\n")
         return 2
 
@@ -586,6 +597,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     show = subs.add_parser("show", help="print one trail, step by step")
     show.add_argument("domain")
+    show.add_argument("--task", help="which trail, when the site has more than one")
     show.set_defaults(func=cmd_show)
 
     site_map = subs.add_parser("map", help="the pages Cairn has looked at on a site")
