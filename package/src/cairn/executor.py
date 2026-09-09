@@ -255,7 +255,13 @@ def _reaim(text: str | None, was: str, now: str) -> tuple[str | None, bool]:
     """
     if not text:
         return text, False
-    pattern = re.compile(rf"(?<![0-9A-Za-z]){re.escape(was)}(?![0-9A-Za-z])", re.IGNORECASE)
+    # A percent-escape counts as a boundary too. `%2Fvouchley` puts an `F` immediately
+    # before the subject, so a plain word check calls it part of a longer word and the
+    # subject goes unseen — inside an encoded URL, which is exactly where it usually is.
+    pattern = re.compile(
+        rf"(?:(?<![0-9A-Za-z])|(?<=%[0-9A-Fa-f]{{2}})){re.escape(was)}(?![0-9A-Za-z])",
+        re.IGNORECASE,
+    )
     swapped, count = pattern.subn(now, text)
     return swapped, count > 0
 

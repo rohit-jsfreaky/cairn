@@ -108,6 +108,21 @@ class TestAimingTheTrail:
 
         assert aimed.steps[0].value == "https://riya.example.com/inbox"
 
+    def test_a_percent_escape_is_a_boundary_too(self) -> None:
+        """Found on a real trail. Search Console stores the property percent-encoded, so
+        the character before the subject is the `F` of `%2F` — a plain word check reads that
+        as part of a longer word and the subject goes unseen, inside an encoded URL, which
+        is exactly where a subject usually lives."""
+        trail = a_trail(subject="ankush")
+        trail.steps[0].value = "https://x.example/inbox?to=https%3A%2F%2Fankush.example.com%2F"
+
+        aimed, touched = with_subject(trail, "ankush", "riya")
+
+        assert (
+            aimed.steps[0].value == "https://x.example/inbox?to=https%3A%2F%2Friya.example.com%2F"
+        )
+        assert 1 in touched
+
     def test_the_check_is_re_aimed_too_so_it_verifies_the_new_subject(self) -> None:
         """This is where the safety comes from. The step's own check was recorded against
         the old subject, so swapping it makes that check confirm the new one landed."""
