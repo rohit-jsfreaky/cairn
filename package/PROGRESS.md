@@ -650,6 +650,19 @@ is the biggest remaining gap between "demo" and "product".
 
 ## Session log
 
+- **2026-09-09 — the error message that broke the install.** `MARKET_MISSING` told the user to
+  run `pip install "cairn[market]"`. **`cairn` is an unrelated project on PyPI.** Following our
+  own message installed a stranger's package, which replaced the `cairn` command with theirs
+  and left the CLI unusable — hit for real while rehearsing the Base clip for the demo. A judge
+  trying the market feature would have hit exactly the same thing.
+  Fixed in `cli.py` and `server.py` to name `cairn-browser`. README also now says the wallet
+  file is NOT read automatically — `cairn sell` fails with "a shop needs somewhere to be paid"
+  until `~/.cairn/wallet.env` is exported, which is the second thing that stopped the rehearsal.
+  Released 0.4.1 for both packages.
+  Rehearsed the whole x402 flow end to end first: share, sell, buy as a second agent, then the
+  buyer replaying what it paid for. Settled on Base Sepolia,
+  tx `0x62b493aea25dd7acc66e3fd4de323fc1c11c5a48a4334c6155ecec42dfdabacc`.
+
 - **2026-09-09 (CI caught what local runs did not) —** three tests failed on GitHub that
   passed here: two in `test_engine.py`, one in `test_run_finishes.py`, all "the run failed
   when it should have succeeded". Cause was `pages_along` carrying a page expectation forward

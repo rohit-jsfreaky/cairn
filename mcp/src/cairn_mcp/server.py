@@ -1079,7 +1079,7 @@ def build_server(
             from cairn import payments
         except ImportError:
             return err(
-                'buying needs an extra: pip install "cairn[market]" in the environment '
+                'buying needs an extra: pip install "cairn-browser[market]" in the environment '
                 "running this MCP server, then restart it."
             )
 

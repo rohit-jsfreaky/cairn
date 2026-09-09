@@ -56,9 +56,12 @@ DOT = "-"
 # Selling and buying pull in a web server and a blockchain library. Anyone who only
 # wants a browser with a memory should never be made to install either, so the market
 # is an optional extra and a missing one is a sentence instead of a traceback.
+# The distribution is `cairn-browser`. `cairn` is SOMEBODY ELSE'S project on PyPI, and
+# naming it here did real damage: following this message installed a stranger's package,
+# which replaced the `cairn` command with theirs and left the CLI unusable.
 MARKET_MISSING = (
     "buying and selling trails needs a few extra packages. Install them with:\n"
-    '       pip install "cairn[market]"'
+    '       pip install "cairn-browser[market]"'
 )
 
 

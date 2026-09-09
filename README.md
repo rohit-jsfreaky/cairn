@@ -274,6 +274,23 @@ cairn buy http://alice:8402 --site posthog.com     # needs CAIRN_WALLET_KEY
 cairn run --site posthog.com --task "…"            # one call
 ```
 
+Both keys live in `~/.cairn/wallet.env`, and **that file is not read automatically** — it is
+a place to keep them, not a config Cairn loads. Put them in the environment first, or `sell`
+stops with "a shop needs somewhere to be paid":
+
+```bash
+set -a && . ~/.cairn/wallet.env && set +a          # bash
+```
+```powershell
+Get-Content "$env:USERPROFILE\.cairn\wallet.env" |
+  Where-Object { $_ -match '^\s*[A-Z_]+=' } |
+  ForEach-Object { $p = $_ -split '=',2; Set-Item -Path "env:$($p[0].Trim())" -Value $p[1].Trim() }
+```
+
+Selling and buying need the extra: `pip install "cairn-browser[market]"`. Install
+**cairn-browser**, not `cairn` — that is an unrelated project on PyPI and it takes over the
+`cairn` command.
+
 Browsing the shop is free — you have to see what you are buying:
 
 ```
